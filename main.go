@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/openfluke/tokentrove/pkg"
+	"github.com/openfluke/tokentrove/pkg/web"
 )
 
 func main() {
@@ -96,7 +97,10 @@ func main() {
 		analyzeCmd := flag.NewFlagSet("analyze", flag.ExitOnError)
 		inputDir := analyzeCmd.String("input", "", "Input directory with token files (required)")
 		outputDir := analyzeCmd.String("output", "", "Output cache directory (required)")
+		reportsDir := analyzeCmd.String("reports", "", "Reports output directory")
 		ngramMax := analyzeCmd.Int("ngrams", 15, "Max n-gram size for frequency analysis")
+		host := analyzeCmd.Bool("host", false, "Start web server to browse cache")
+		port := analyzeCmd.Int("port", 3000, "Web server port (used with -host)")
 
 		analyzeCmd.Parse(os.Args[2:])
 
@@ -106,6 +110,16 @@ func main() {
 			os.Exit(1)
 		}
 
+		// If hosting, start web server
+		if *host {
+			if err := web.StartServer(*outputDir, *reportsDir, *ngramMax, *port); err != nil {
+				fmt.Printf("Error starting web server: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+
+		// Otherwise run analysis
 		if err := pkg.Analyze(*inputDir, *outputDir, *ngramMax); err != nil {
 			fmt.Printf("Error during analysis: %v\n", err)
 			os.Exit(1)

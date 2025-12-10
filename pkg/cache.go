@@ -773,21 +773,26 @@ func ShowStatus(inputDir, outputDir string) error {
 	return nil
 }
 
-// Analyze runs all cache building steps in sequence: tokens, index, ngramfreq
+// Analyze runs all cache building steps in sequence: tokens, index, ngramfreq, ngrams
 func Analyze(inputDir, outputDir string, maxN int) error {
-	fmt.Println("=== STEP 1/3: Building Token Cache ===")
+	fmt.Println("=== STEP 1/4: Building Token Cache ===")
 	if err := BuildTokenCache(inputDir, outputDir); err != nil {
 		return fmt.Errorf("token cache failed: %w", err)
 	}
 
-	fmt.Println("\n=== STEP 2/3: Building Word-to-File Index ===")
+	fmt.Println("\n=== STEP 2/4: Building Word-to-File Index ===")
 	if err := BuildIndexCache(inputDir, outputDir); err != nil {
 		return fmt.Errorf("index cache failed: %w", err)
 	}
 
-	fmt.Println("\n=== STEP 3/3: Building N-gram Frequency Cache ===")
+	fmt.Println("\n=== STEP 3/4: Building N-gram Frequency Cache ===")
 	if err := BuildNgramFreqCache(outputDir, maxN); err != nil {
 		return fmt.Errorf("ngramfreq cache failed: %w", err)
+	}
+
+	fmt.Println("\n=== STEP 4/4: Building N-gram Index (for file tracking) ===")
+	if err := BuildNgramCache(outputDir, maxN); err != nil {
+		return fmt.Errorf("ngram index failed: %w", err)
 	}
 
 	fmt.Println("\n=== ANALYSIS COMPLETE ===")

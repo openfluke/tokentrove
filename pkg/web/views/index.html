@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{.Title}}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        .mono { font-family: 'JetBrains Mono', monospace; }
+        .gradient-text { background: linear-gradient(135deg, #6366f1 0%, #f43f5e 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    </style>
+</head>
+<body class="bg-gray-950 text-gray-100 min-h-screen">
+    <header class="bg-gray-900 border-b border-gray-800 sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+            <h1 class="text-xl font-bold gradient-text cursor-pointer" onclick="showView('main')">🔮 TokenTrove</h1>
+            <div class="flex items-center gap-3">
+                <input type="text" id="searchInput" placeholder="Search..." class="w-48 bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm">
+                <span id="wsStatus" class="text-xs text-gray-400">...</span>
+            </div>
+        </div>
+    </header>
+
+    <main class="max-w-7xl mx-auto px-4 py-6">
+        <!-- Main View -->
+        <div id="mainView">
+            <div class="grid grid-cols-4 gap-3 mb-6">
+                <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+                    <p class="text-gray-400 text-xs">Words</p>
+                    <p class="text-xl font-bold text-indigo-400">{{.WordCount}}</p>
+                </div>
+                <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+                    <p class="text-gray-400 text-xs">Files</p>
+                    <p class="text-xl font-bold text-emerald-400">{{.FileCount}}</p>
+                </div>
+                <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+                    <p class="text-gray-400 text-xs">Max N</p>
+                    <p class="text-xl font-bold text-amber-400">{{.MaxN}}</p>
+                </div>
+                <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+                    <p class="text-gray-400 text-xs">2-grams</p>
+                    <p class="text-xl font-bold text-pink-400" id="stat2gram">-</p>
+                </div>
+            </div>
+
+            <div id="searchResults" class="hidden mb-6 bg-gray-900 border border-gray-800 rounded-lg p-4">
+                <div class="flex justify-between mb-3">
+                    <span class="font-medium">🔍 Results</span>
+                    <button onclick="closeSearch()" class="text-gray-400">✕</button>
+                </div>
+                <div id="searchContent"></div>
+            </div>
+
+            <div class="grid grid-cols-3 gap-4">
+                <div class="col-span-2">
+                    <div class="flex items-center gap-2 mb-3">
+                        <span class="font-medium">📊 N-grams</span>
+                        <span class="text-xs text-gray-500">(streamed)</span>
+                    </div>
+                    <div class="flex gap-1 mb-3 flex-wrap" id="ngramTabs"></div>
+                    <div class="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
+                        <div id="ngramList" class="divide-y divide-gray-800 max-h-80 overflow-y-auto text-sm"></div>
+                    </div>
+                    <div class="flex justify-center gap-3 mt-3 text-sm" id="pagination"></div>
+                </div>
+
+                <div>
+                    <span class="font-medium mb-3 block">📑 Reports</span>
+                    <div class="bg-gray-900 border border-gray-800 rounded-lg p-3 space-y-3">
+                        <div class="border-b border-gray-800 pb-3">
+                            <select id="reportType" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm mb-2">
+                                <option value="top_ngrams">Top N-grams Summary</option>
+                                <option value="search">Search Report</option>
+                                <option value="recurring_text">🔥 Recurring Text Finder</option>
+                            </select>
+                            <input id="reportQuery" placeholder="Query (for search)" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm mb-2 hidden">
+                            <div id="recurringOptions" class="hidden space-y-2 mb-2">
+                                <div>
+                                    <label class="text-xs text-gray-400">Min N-gram size:</label>
+                                    <select id="minN" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                        <option value="3">3 words</option>
+                                        <option value="5" selected>5 words</option>
+                                        <option value="7">7 words</option>
+                                        <option value="10">10 words</option>
+                                    </select>
+                                </div>
+                                <p class="text-xs text-gray-500">Finds sentences/paragraphs that appear in multiple files</p>
+                            </div>
+                            <button onclick="queueReport()" class="w-full bg-indigo-600 text-white rounded px-3 py-1.5 text-sm font-medium hover:bg-indigo-500">
+                                Generate Report
+                            </button>
+                        </div>
+                        <div>
+                            <p class="text-xs text-gray-400 mb-2">Recent Jobs</p>
+                            <div id="jobsList" class="space-y-1 max-h-64 overflow-y-auto text-sm"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Report View -->
+        <div id="reportView" class="hidden">
+            <div class="flex items-center gap-3 mb-4">
+                <button onclick="showView('main')" class="text-gray-400 hover:text-white">← Back</button>
+                <div>
+                    <span class="font-medium" id="reportTitle">Report</span>
+                    <p class="text-xs text-gray-400" id="reportDesc"></p>
+                </div>
+            </div>
+            <div class="bg-gray-900 border border-gray-800 rounded-lg p-4">
+                <div id="reportProgress" class="hidden mb-4">
+                    <div class="flex justify-between text-sm mb-1">
+                        <span id="progressMessage">Processing...</span>
+                        <span id="progressPercent">0%</span>
+                    </div>
+                    <div class="w-full bg-gray-800 rounded-full h-2">
+                        <div id="progressBar" class="bg-indigo-600 h-2 rounded-full transition-all" style="width: 0%"></div>
+                    </div>
+                </div>
+                <div id="reportContent" class="text-sm"></div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        let ws, stats, currentN = 2, offset = 0;
+        const limit = 30;
+
+        document.getElementById('reportType').onchange = (e) => {
+            document.getElementById('reportQuery').classList.toggle('hidden', e.target.value !== 'search');
+            document.getElementById('recurringOptions').classList.toggle('hidden', e.target.value !== 'recurring_text');
+        };
+
+        function showView(v) {
+            document.getElementById('mainView').classList.toggle('hidden', v !== 'main');
+            document.getElementById('reportView').classList.toggle('hidden', v !== 'report');
+        }
+
+        function connectWS() {
+            ws = new WebSocket(`ws://${location.host}/ws`);
+            ws.onopen = () => document.getElementById('wsStatus').innerHTML = '<span class="text-emerald-400">● Live</span>';
+            ws.onclose = () => { document.getElementById('wsStatus').innerHTML = '<span class="text-red-400">● Off</span>'; setTimeout(connectWS, 3000); };
+            ws.onmessage = (e) => handleMsg(JSON.parse(e.data));
+        }
+
+        function handleMsg(data) {
+            if (data.type === 'stats') { stats = data; updateStats(); buildTabs(); requestNgrams(); }
+            else if (data.type === 'ngrams') renderNgrams(data);
+            else if (data.type === 'search') renderSearch(data);
+        }
+
+        function updateStats() {
+            if (stats?.ngramCounts?.['2gram']) document.getElementById('stat2gram').textContent = stats.ngramCounts['2gram'].toLocaleString();
+        }
+
+        function buildTabs() {
+            const c = document.getElementById('ngramTabs');
+            c.innerHTML = '';
+            for (let n = 2; n <= (stats?.maxN || 2); n++) {
+                if ((stats?.ngramCounts?.[n+'gram'] || 0) > 0) {
+                    const b = document.createElement('button');
+                    b.className = `px-2 py-1 rounded text-xs ${n === currentN ? 'bg-indigo-600 text-white' : 'bg-gray-800'}`;
+                    b.textContent = n + '-gram';
+                    b.onclick = () => { currentN = n; offset = 0; buildTabs(); requestNgrams(); };
+                    c.appendChild(b);
+                }
+            }
+        }
+
+        function requestNgrams() { ws?.send(JSON.stringify({ action: 'ngrams', n: currentN, limit, offset })); }
+
+        function renderNgrams(data) {
+            const c = document.getElementById('ngramList');
+            c.innerHTML = (data.ngrams || []).map(ng => `
+                <div class="flex justify-between px-3 py-2 hover:bg-gray-800/50">
+                    <span class="mono">${ng.words?.join(' · ') || ''}</span>
+                    <span class="text-pink-400 text-xs">${ng.count?.toLocaleString()}</span>
+                </div>
+            `).join('') || '<div class="p-4 text-gray-400">No data</div>';
+
+            const p = document.getElementById('pagination');
+            const t = data.total || 0;
+            p.innerHTML = `
+                <button onclick="page(-1)" ${offset <= 0 ? 'disabled' : ''} class="px-2 py-1 bg-gray-800 rounded text-xs disabled:opacity-50">←</button>
+                <span class="text-gray-400 text-xs">${offset+1}-${Math.min(offset+limit, t)} / ${t}</span>
+                <button onclick="page(1)" ${offset+limit >= t ? 'disabled' : ''} class="px-2 py-1 bg-gray-800 rounded text-xs disabled:opacity-50">→</button>
+            `;
+        }
+
+        function page(d) { offset = Math.max(0, offset + d * limit); requestNgrams(); }
+        function search() { const q = document.getElementById('searchInput').value; if (q) ws?.send(JSON.stringify({ action: 'search', query: q })); }
+        function renderSearch(data) {
+            document.getElementById('searchResults').classList.remove('hidden');
+            let h = '';
+            if (data.words?.length) h += `<div class="mb-2">${data.words.map(w => `<span class="bg-gray-800 px-1.5 py-0.5 rounded text-xs mx-0.5">${w.word}</span>`).join('')}</div>`;
+            for (let n = 2; n <= 15; n++) {
+                if (data.ngrams?.[n]?.length) h += `<div class="mb-2"><span class="text-xs text-gray-400">${n}-gram:</span> ${data.ngrams[n].slice(0,3).map(ng => `<span class="bg-gray-800 px-1.5 py-0.5 rounded text-xs mx-0.5">${ng.words?.join(' ')}</span>`).join('')}</div>`;
+            }
+            document.getElementById('searchContent').innerHTML = h || '<span class="text-gray-400">No results</span>';
+        }
+        function closeSearch() { document.getElementById('searchResults').classList.add('hidden'); }
+
+        async function queueReport() {
+            const type = document.getElementById('reportType').value;
+            const query = document.getElementById('reportQuery').value;
+            const minN = parseInt(document.getElementById('minN').value);
+            const res = await fetch('/api/report', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ type, query, minN }) });
+            const job = await res.json();
+            showView('report');
+            document.getElementById('reportTitle').textContent = job.name || job.type;
+            document.getElementById('reportDesc').textContent = job.description || '';
+            document.getElementById('reportProgress').classList.remove('hidden');
+            document.getElementById('reportContent').innerHTML = '<span class="text-gray-400">Processing...</span>';
+            pollJob(job.id);
+            loadJobs();
+        }
+
+        async function pollJob(id) {
+            const res = await fetch(`/api/report/${id}`);
+            const job = await res.json();
+            if (job.total > 0) {
+                const pct = Math.round((job.progress / job.total) * 100);
+                document.getElementById('progressBar').style.width = pct + '%';
+                document.getElementById('progressPercent').textContent = pct + '%';
+            }
+            document.getElementById('progressMessage').textContent = job.message || job.status;
+            if (job.status === 'running' || job.status === 'queued') setTimeout(() => pollJob(id), 1000);
+            else if (job.status === 'done') loadReportContent(id);
+            else if (job.status === 'error') document.getElementById('reportContent').innerHTML = `<span class="text-red-400">Error: ${job.error}</span>`;
+        }
+
+        function toggleFiles(id) {
+            const el = document.getElementById('files-' + id);
+            el.classList.toggle('hidden');
+        }
+
+        async function loadReportContent(id) {
+            document.getElementById('reportProgress').classList.add('hidden');
+            const res = await fetch(`/api/report/${id}/view`);
+            const result = await res.json();
+            
+            if (result.data?.chains) {
+                // Recurring text visualization
+                let html = `<p class="mb-4 text-gray-400">${result.data.chainCount} recurring text patterns found (min ${result.data.minN}-gram)</p>`;
+                html += '<div class="space-y-3">';
+                
+                result.data.chains.forEach((chain, idx) => {
+                    const filesHtml = chain.files?.length 
+                        ? chain.files.map(f => `<div class="py-1 px-2 bg-gray-900 rounded text-xs text-gray-300">${f}</div>`).join('')
+                        : '<div class="text-gray-500 text-xs">File data not available - run with -cache ngrams first</div>';
+                    
+                    html += `
+                        <div class="bg-gray-800 rounded-lg p-3">
+                            <div class="mb-2">
+                                <span class="text-indigo-400 font-medium">${chain.fullText}</span>
+                            </div>
+                            <div class="flex items-center gap-4 text-xs text-gray-400 mb-2">
+                                <span>📏 ${chain.totalLength} words</span>
+                                <span>📁 <button onclick="toggleFiles(${idx})" class="text-emerald-400 hover:underline">${chain.fileCount} files</button></span>
+                            </div>
+                            <div class="text-xs text-gray-500 mb-2">
+                                ${chain.segments.map(s => `<span class="bg-gray-700 px-1.5 py-0.5 rounded mr-1">${s.n}-gram (${s.count})</span>`).join(' + ')}
+                            </div>
+                            <div id="files-${idx}" class="hidden mt-2 max-h-40 overflow-y-auto space-y-1">
+                                ${filesHtml}
+                            </div>
+                        </div>
+                    `;
+                });
+                html += '</div>';
+                document.getElementById('reportContent').innerHTML = html;
+            } else if (result.data) {
+                let html = '';
+                Object.keys(result.data).forEach(key => {
+                    if (Array.isArray(result.data[key])) {
+                        html += `<div class="mb-4"><h3 class="text-sm text-gray-400 mb-2">${key}</h3>`;
+                        html += '<div class="space-y-1">' + result.data[key].slice(0, 30).map(item => `<div class="bg-gray-800 rounded px-3 py-2 flex justify-between"><span>${item.phrase || ''}</span><span class="text-pink-400">${item.count || ''}</span></div>`).join('') + '</div></div>';
+                    }
+                });
+                document.getElementById('reportContent').innerHTML = html || '<pre>' + JSON.stringify(result.data, null, 2) + '</pre>';
+            } else if (result.text) {
+                document.getElementById('reportContent').innerHTML = `<pre class="whitespace-pre-wrap text-xs">${result.text}</pre>`;
+            }
+        }
+
+        async function loadJobs() {
+            const res = await fetch('/api/reports');
+            const data = await res.json();
+            document.getElementById('jobsList').innerHTML = (data.jobs || []).slice(0, 10).map(j => `
+                <div class="bg-gray-800 rounded px-2 py-1.5 cursor-pointer hover:bg-gray-700" onclick="viewJob('${j.id}')">
+                    <div class="flex justify-between items-center">
+                        <span class="truncate text-xs font-medium">${j.name || j.type}</span>
+                        <span class="${j.status === 'done' ? 'text-emerald-400' : j.status === 'error' ? 'text-red-400' : 'text-yellow-400'} text-xs">${j.status}</span>
+                    </div>
+                    <p class="text-xs text-gray-500 truncate">${j.description || ''}</p>
+                </div>
+            `).join('') || '<span class="text-gray-500 text-xs">No jobs</span>';
+        }
+
+        function viewJob(id) {
+            showView('report');
+            document.getElementById('reportProgress').classList.add('hidden');
+            fetch(`/api/report/${id}`).then(r => r.json()).then(job => {
+                document.getElementById('reportTitle').textContent = job.name || job.type;
+                document.getElementById('reportDesc').textContent = job.description || '';
+                if (job.status === 'done') loadReportContent(id);
+                else if (job.status === 'running' || job.status === 'queued') { document.getElementById('reportProgress').classList.remove('hidden'); pollJob(id); }
+            });
+        }
+
+        document.getElementById('searchInput').onkeypress = (e) => { if (e.key === 'Enter') search(); };
+        connectWS();
+        loadJobs();
+        setInterval(loadJobs, 5000);
+    </script>
+</body>
+</html>
