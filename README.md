@@ -60,13 +60,31 @@ TOTAL                 230        135         95
 
 ### Build Token Cache
 
-Extract all unique words/tokens from converted files into a single `uniq.txt`:
+Extract all unique words/tokens from converted files:
 
 ```bash
 go run . process -input /home/samuel/data/token -output /home/samuel/data/cache -cache tokens
 ```
 
-This scans all files in the input directory and creates `uniq.txt` containing every unique word, one per line, sorted alphabetically.
+Creates three files in the output directory:
+- `settings.txt` - Stores the input path
+- `uniq.txt` - All unique words, one per line, sorted
+- `files.txt` - Relative paths of all scanned files
+
+### Build Word-to-File Index
+
+After building the token cache, create an index mapping words to files:
+
+```bash
+go run . process -input /home/samuel/data/token -output /home/samuel/data/cache -cache index
+```
+
+Creates `fileuniqindex.txt` where each line maps a word index to file indices:
+```
+0,[1,5,23]
+1,[2,4,5,100]
+```
+- `0,[1,5,23]` means word at index 0 in `uniq.txt` appears in files 1, 5, 23 from `files.txt`
 
 ## Flags
 
@@ -79,7 +97,7 @@ This scans all files in the input directory and creates `uniq.txt` containing ev
 | `-r` | `false` | Replace existing files in output |
 | `-ram-limit` | (none) | Soft memory limit (e.g., `1GB`, `512MB`) |
 | `-status` | `false` | Show remaining files to convert (no processing) |
-| `-cache` | (none) | Cache mode: `tokens` (extract unique words to uniq.txt) |
+| `-cache` | (none) | Cache mode: `tokens` or `index` |
 
 ## Processing Types
 

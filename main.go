@@ -44,13 +44,19 @@ func main() {
 
 		// Handle cache mode
 		if *cacheMode != "" {
-			if *cacheMode == "tokens" {
+			switch *cacheMode {
+			case "tokens":
 				if err := buildTokenCache(*inputDir, *outputFile); err != nil {
 					fmt.Printf("Error building token cache: %v\n", err)
 					os.Exit(1)
 				}
-			} else {
-				fmt.Printf("Unknown cache mode: %s (use 'tokens')\n", *cacheMode)
+			case "index":
+				if err := buildIndexCache(*inputDir, *outputFile); err != nil {
+					fmt.Printf("Error building index cache: %v\n", err)
+					os.Exit(1)
+				}
+			default:
+				fmt.Printf("Unknown cache mode: %s (use 'tokens' or 'index')\n", *cacheMode)
 				os.Exit(1)
 			}
 			return
@@ -225,6 +231,150 @@ func buildTokenCache(inputDir, outputDir string) error {
 	filesWriter.Flush()
 
 	fmt.Printf("File list written to: %s (%d files)\n", filesPath, len(allFiles))
+
+	return nil
+}
+
+func buildIndexCache(inputDir, outputDir string) error {
+	fmt.Println("Building index cache...")
+	fmt.Printf("Cache dir: %s\n\n", outputDir)
+
+	// Load settings.txt to get the original input path for token files
+	settingsPath := filepath.Join(outputDir, "settings.txt")
+	settingsData, err := os.ReadFile(settingsPath)
+	if err != nil {
+		return fmt.Errorf("could not read settings.txt (run -cache tokens first): %w", err)
+	}
+
+	// Parse input path from settings
+	var tokenInputDir string
+	for _, line := range strings.Split(string(settingsData), "\n") {
+		if strings.HasPrefix(line, "input=") {
+			tokenInputDir = strings.TrimPrefix(line, "input=")
+			break
+		}
+	}
+	if tokenInputDir == "" {
+		return fmt.Errorf("could not find input path in settings.txt")
+	}
+	fmt.Printf("Token files dir: %s\n", tokenInputDir)
+
+	// Load uniq.txt into map (word -> index)
+	uniqPath := filepath.Join(outputDir, "uniq.txt")
+	uniqFile, err := os.Open(uniqPath)
+	if err != nil {
+		return fmt.Errorf("could not open uniq.txt (run -cache tokens first): %w", err)
+	}
+	defer uniqFile.Close()
+
+	wordToIndex := make(map[string]int)
+	scanner := bufio.NewScanner(uniqFile)
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	wordIndex := 0
+	for scanner.Scan() {
+		word := scanner.Text()
+		wordToIndex[word] = wordIndex
+		wordIndex++
+	}
+	fmt.Printf("Loaded %d unique words from uniq.txt\n", len(wordToIndex))
+
+	// Load files.txt into map (relative path -> index)
+	filesPath := filepath.Join(outputDir, "files.txt")
+	filesFile, err := os.Open(filesPath)
+	if err != nil {
+		return fmt.Errorf("could not open files.txt (run -cache tokens first): %w", err)
+	}
+	defer filesFile.Close()
+
+	fileToIndex := make(map[string]int)
+	var filesList []string
+	scanner = bufio.NewScanner(filesFile)
+	fileIndex := 0
+	for scanner.Scan() {
+		relPath := scanner.Text()
+		fileToIndex[relPath] = fileIndex
+		filesList = append(filesList, relPath)
+		fileIndex++
+	}
+	fmt.Printf("Loaded %d files from files.txt\n", len(filesList))
+
+	// Build word -> file indices mapping
+	// wordToFiles[wordIndex] = list of file indices containing that word
+	wordToFiles := make(map[int]map[int]struct{})
+
+	fmt.Println("\nScanning files for word occurrences...")
+	for i, relPath := range filesList {
+		fullPath := filepath.Join(tokenInputDir, relPath)
+
+		file, err := os.Open(fullPath)
+		if err != nil {
+			continue
+		}
+
+		scanner := bufio.NewScanner(file)
+		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+
+		for scanner.Scan() {
+			words := strings.Fields(scanner.Text())
+			for _, word := range words {
+				word = strings.TrimSpace(word)
+				if wIdx, ok := wordToIndex[word]; ok {
+					if wordToFiles[wIdx] == nil {
+						wordToFiles[wIdx] = make(map[int]struct{})
+					}
+					wordToFiles[wIdx][i] = struct{}{}
+				}
+			}
+		}
+		file.Close()
+
+		if (i+1)%1000 == 0 || i+1 == len(filesList) {
+			fmt.Printf("Processed: %d / %d files\n", i+1, len(filesList))
+		}
+	}
+
+	// Write fileuniqindex.txt
+	indexPath := filepath.Join(outputDir, "fileuniqindex.txt")
+	indexFile, err := os.Create(indexPath)
+	if err != nil {
+		return fmt.Errorf("could not create fileuniqindex.txt: %w", err)
+	}
+	defer indexFile.Close()
+
+	writer := bufio.NewWriter(indexFile)
+
+	// Write in order of word index
+	for wIdx := 0; wIdx < len(wordToIndex); wIdx++ {
+		fileIndices, ok := wordToFiles[wIdx]
+		if !ok || len(fileIndices) == 0 {
+			// Word not found in any file (shouldn't happen but handle it)
+			writer.WriteString(fmt.Sprintf("%d,[]\n", wIdx))
+			continue
+		}
+
+		// Collect and sort file indices
+		indices := make([]int, 0, len(fileIndices))
+		for fIdx := range fileIndices {
+			indices = append(indices, fIdx)
+		}
+		sort.Ints(indices)
+
+		// Format as: wordIndex,[fileIndex1,fileIndex2,...]
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("%d,[", wIdx))
+		for j, fIdx := range indices {
+			if j > 0 {
+				sb.WriteString(",")
+			}
+			sb.WriteString(fmt.Sprintf("%d", fIdx))
+		}
+		sb.WriteString("]\n")
+		writer.WriteString(sb.String())
+	}
+	writer.Flush()
+
+	fmt.Printf("\nDone! Index written to: %s\n", indexPath)
+	fmt.Printf("Mapped %d words to their file locations\n", len(wordToFiles))
 
 	return nil
 }
