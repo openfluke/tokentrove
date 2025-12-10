@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/openfluke/tokentrove/pkg"
 )
@@ -60,13 +61,12 @@ type Job struct {
 	Index int
 }
 
+// Rewriting runProcess logic to support granular progress updates
 func runProcess(inputDir, outputDir string, workers int, replace bool) error {
-	// Ensure output directory exists
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return fmt.Errorf("could not create output directory: %w", err)
 	}
 
-	// 1. Log files setup
 	ignoredFile, err := os.OpenFile(filepath.Join(outputDir, "ignored.txt"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return fmt.Errorf("setup logs: %w", err)
@@ -79,9 +79,8 @@ func runProcess(inputDir, outputDir string, workers int, replace bool) error {
 	}
 	defer errorsFile.Close()
 
-	// Create channels for safe logging
-	logIgnored := make(chan string, 100)
-	logError := make(chan string, 100)
+	logIgnored := make(chan string, 1000)
+	logError := make(chan string, 1000)
 
 	go func() {
 		for msg := range logIgnored {
@@ -94,13 +93,12 @@ func runProcess(inputDir, outputDir string, workers int, replace bool) error {
 		}
 	}()
 
-	// 2. Count total files first
 	fmt.Println("Scanning input directory to count files...")
 	var allFiles []string
 	err = filepath.Walk(inputDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
-		} // skip permission errors during scan
+		}
 		if info.IsDir() {
 			return nil
 		}
@@ -115,31 +113,64 @@ func runProcess(inputDir, outputDir string, workers int, replace bool) error {
 	}
 
 	totalFiles := len(allFiles)
-	fmt.Printf("Found %d files. Starting processing...\n", totalFiles)
+	fmt.Printf("Found %d files. Starting processing with %d workers...\n", totalFiles, workers)
 
 	jobs := make(chan Job, workers*2)
-	results := make(chan error, workers)
+	progressChan := make(chan bool, workers*2) // Signal for each processed file
+	doneProcessing := make(chan struct{})      // Signal when all files are processed and progress reported
+
+	var wg sync.WaitGroup // To wait for all worker goroutines to finish
 
 	// Start workers
 	for i := 0; i < workers; i++ {
-		go func(id int) {
+		wg.Add(1) // Increment WaitGroup counter for each worker
+		go func() {
+			defer wg.Done() // Decrement when worker exits
 			for job := range jobs {
-				processFile(job.Path, inputDir, outputDir, job.Index, totalFiles, replace, logIgnored, logError)
+				processFile(job.Path, inputDir, outputDir, replace, logIgnored, logError)
+				progressChan <- true // Signal that one file is done
 			}
-			results <- nil
-		}(i)
+		}()
 	}
 
 	// Producer
-	for i, path := range allFiles {
-		jobs <- Job{Path: path, Index: i + 1}
-	}
-	close(jobs)
+	go func() {
+		for index, path := range allFiles {
+			jobs <- Job{Path: path, Index: index + 1}
+		}
+		close(jobs) // No more jobs will be sent
+	}()
 
-	// Wait
-	for i := 0; i < workers; i++ {
-		<-results
-	}
+	// Progress monitor goroutine
+	go func() {
+		finished := 0
+		// Notify every 'workers' items or 10% or something reasonable.
+		// User asked for "clusters of 100 files done... like 1/100"
+		// Let's print every 'workers' items to match their request "chunks of the -multi"
+		notifyStep := workers
+		if notifyStep < 1 {
+			notifyStep = 10
+		} // Ensure a minimum step
+
+		for range progressChan {
+			finished++
+			if finished%notifyStep == 0 || finished == totalFiles {
+				percent := float64(finished) / float64(totalFiles) * 100
+				fmt.Printf("Progress: %d / %d (%.1f%%)\n", finished, totalFiles, percent)
+			}
+			if finished == totalFiles {
+				close(doneProcessing) // Signal that all files have been processed and progress reported
+				return
+			}
+		}
+	}()
+
+	// Wait for all workers to finish processing their jobs
+	wg.Wait()
+	close(progressChan) // Close progress channel after all workers are done
+
+	// Wait for the progress monitor to finish reporting all progress
+	<-doneProcessing
 
 	close(logIgnored)
 	close(logError)
@@ -148,7 +179,7 @@ func runProcess(inputDir, outputDir string, workers int, replace bool) error {
 	return nil
 }
 
-func processFile(path, inputDir, outputDir string, index, total int, replace bool, logIgnored, logError chan<- string) {
+func processFile(path, inputDir, outputDir string, replace bool, logIgnored, logError chan<- string) {
 	relPath, err := filepath.Rel(inputDir, path)
 	if err != nil {
 		logError <- fmt.Sprintf("%s: relative path error %v", path, err)
@@ -157,28 +188,19 @@ func processFile(path, inputDir, outputDir string, index, total int, replace boo
 
 	outPath := filepath.Join(outputDir, relPath+".txt")
 
-	// Check existing
 	if !replace {
 		if _, err := os.Stat(outPath); err == nil {
-			// exists
-			fmt.Printf("[%d/%d] [Skipped] %s (Exists)\n", index, total, path)
-			return
+			return // Output file exists, skip silently
 		}
-	} else {
-		// If replace is true, using os.WriteFile will overwrite, so no manual remove needed usually,
-		// but checking allows for explicit logging if desired.
 	}
 
 	res, err := pkg.ExtractContent(path)
 	if err != nil {
 		if strings.Contains(err.Error(), "unsupported file extension") {
 			logIgnored <- fmt.Sprintf("%s: unsupported extension", path)
-			// Silent on console for unsupported
-			// fmt.Printf("[%d/%d] [Ignored] %s\n", index, total, path)
 			return
 		}
 		logError <- fmt.Sprintf("%s: extraction error: %v", path, err)
-		fmt.Printf("[%d/%d] [Error] %s\n", index, total, path) // Show errors on console too?
 		return
 	}
 
@@ -191,7 +213,4 @@ func processFile(path, inputDir, outputDir string, index, total int, replace boo
 		logError <- fmt.Sprintf("%s: write error: %v", path, err)
 		return
 	}
-
-	// Progress calculation could be fancy, but "1/N" is requested
-	fmt.Printf("[%d/%d] [Done] %s\n", index, total, path)
 }
