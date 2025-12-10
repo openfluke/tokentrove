@@ -102,6 +102,13 @@ func buildTokenCache(inputDir, outputDir string) error {
 		return fmt.Errorf("could not create output directory: %w", err)
 	}
 
+	// Write settings.txt with input path (overwrites if exists)
+	settingsPath := filepath.Join(outputDir, "settings.txt")
+	if err := os.WriteFile(settingsPath, []byte("input="+inputDir+"\n"), 0644); err != nil {
+		return fmt.Errorf("could not write settings: %w", err)
+	}
+	fmt.Printf("Settings written to: %s\n", settingsPath)
+
 	// Use a map to track unique words
 	uniqueWords := make(map[string]struct{})
 
@@ -123,6 +130,9 @@ func buildTokenCache(inputDir, outputDir string) error {
 
 	fmt.Printf("Found %d files to scan...\n", fileCount)
 
+	// Track all file paths (relative)
+	var allFiles []string
+
 	// Process each file
 	processed := 0
 	err = filepath.Walk(inputDir, func(path string, info os.FileInfo, err error) error {
@@ -132,6 +142,13 @@ func buildTokenCache(inputDir, outputDir string) error {
 		if info.IsDir() || strings.HasPrefix(filepath.Base(path), ".") {
 			return nil
 		}
+
+		// Track relative file path
+		relPath, err := filepath.Rel(inputDir, path)
+		if err != nil {
+			relPath = path // fallback to full path if rel fails
+		}
+		allFiles = append(allFiles, relPath)
 
 		// Read file content
 		file, err := os.Open(path)
@@ -148,7 +165,7 @@ func buildTokenCache(inputDir, outputDir string) error {
 			// Split by whitespace
 			words := strings.Fields(line)
 			for _, word := range words {
-				// Clean the word - lowercase and trim
+				// Clean the word - trim
 				word = strings.TrimSpace(word)
 				if word != "" {
 					uniqueWords[word] = struct{}{}
@@ -174,7 +191,7 @@ func buildTokenCache(inputDir, outputDir string) error {
 	}
 	sort.Strings(sortedWords)
 
-	// Write to uniq.txt
+	// Write to uniq.txt (overwrites if exists)
 	outPath := filepath.Join(outputDir, "uniq.txt")
 	outFile, err := os.Create(outPath)
 	if err != nil {
@@ -191,6 +208,23 @@ func buildTokenCache(inputDir, outputDir string) error {
 
 	fmt.Printf("\nDone! Found %d unique tokens.\n", len(sortedWords))
 	fmt.Printf("Written to: %s\n", outPath)
+
+	// Write files.txt with relative file paths (overwrites if exists)
+	filesPath := filepath.Join(outputDir, "files.txt")
+	filesFile, err := os.Create(filesPath)
+	if err != nil {
+		return fmt.Errorf("could not create files list: %w", err)
+	}
+	defer filesFile.Close()
+
+	filesWriter := bufio.NewWriter(filesFile)
+	for _, relPath := range allFiles {
+		filesWriter.WriteString(relPath)
+		filesWriter.WriteString("\n")
+	}
+	filesWriter.Flush()
+
+	fmt.Printf("File list written to: %s (%d files)\n", filesPath, len(allFiles))
 
 	return nil
 }
