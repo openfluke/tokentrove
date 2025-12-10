@@ -28,6 +28,7 @@ func main() {
 		concurrency := processCmd.Int("multi", 100, "Number of concurrent workers")
 		replace := processCmd.Bool("r", false, "Replace existing files in output")
 		ramLimitStr := processCmd.String("ram-limit", "", "Soft memory limit (e.g., '1GB', '512MB'). If exceeded, pauses feeding workers.")
+		statusOnly := processCmd.Bool("status", false, "Show remaining files to convert by file type (no processing)")
 
 		processCmd.Parse(os.Args[2:])
 
@@ -35,6 +36,15 @@ func main() {
 			fmt.Println("Error: -input directory is required")
 			processCmd.PrintDefaults()
 			os.Exit(1)
+		}
+
+		// Handle status mode
+		if *statusOnly {
+			if err := showStatus(*inputDir, *outputFile); err != nil {
+				fmt.Printf("Error getting status: %v\n", err)
+				os.Exit(1)
+			}
+			return
 		}
 
 		ramLimit, err := parseMemoryLimit(*ramLimitStr)
@@ -62,6 +72,107 @@ func printUsage() {
 	fmt.Println("\nCommands:")
 	fmt.Println("  process    Process a directory and extract text from all supported files")
 	fmt.Println("\nRun 'tokentrove <command> -h' for more information.")
+}
+
+func showStatus(inputDir, outputDir string) error {
+	// Count files by extension in input directory
+	inputCounts := make(map[string]int)
+	err := filepath.Walk(inputDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() {
+			return nil
+		}
+		if strings.HasPrefix(filepath.Base(path), ".") {
+			return nil
+		}
+		ext := strings.ToLower(filepath.Ext(path))
+		if ext == "" {
+			ext = "(no extension)"
+		}
+		inputCounts[ext]++
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	// Count files already converted in output directory (they have .txt suffix)
+	convertedCounts := make(map[string]int)
+	err = filepath.Walk(outputDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() {
+			return nil
+		}
+		// Output files are named like original.ext.txt
+		// So we need to strip .txt and get the original extension
+		base := filepath.Base(path)
+		if !strings.HasSuffix(base, ".txt") {
+			return nil
+		}
+		// Remove .txt suffix to get original filename
+		original := strings.TrimSuffix(base, ".txt")
+		ext := strings.ToLower(filepath.Ext(original))
+		if ext == "" {
+			ext = "(no extension)"
+		}
+		convertedCounts[ext]++
+		return nil
+	})
+	if err != nil {
+		// Output dir might not exist yet, that's okay
+		if !os.IsNotExist(err) {
+			return err
+		}
+	}
+
+	// Calculate remaining files
+	fmt.Println("\n=== Conversion Status ===")
+	fmt.Printf("Input:  %s\n", inputDir)
+	fmt.Printf("Output: %s\n\n", outputDir)
+
+	totalInput := 0
+	totalConverted := 0
+	totalRemaining := 0
+
+	// Collect all extensions
+	allExts := make(map[string]bool)
+	for ext := range inputCounts {
+		allExts[ext] = true
+	}
+
+	// Sort extensions for consistent output
+	var exts []string
+	for ext := range allExts {
+		exts = append(exts, ext)
+	}
+
+	fmt.Printf("%-15s %8s %10s %10s\n", "Extension", "Total", "Converted", "Remaining")
+	fmt.Println(strings.Repeat("-", 45))
+
+	for _, ext := range exts {
+		input := inputCounts[ext]
+		converted := convertedCounts[ext]
+		remaining := input - converted
+		if remaining < 0 {
+			remaining = 0
+		}
+
+		totalInput += input
+		totalConverted += converted
+		totalRemaining += remaining
+
+		fmt.Printf("%-15s %8d %10d %10d\n", ext, input, converted, remaining)
+	}
+
+	fmt.Println(strings.Repeat("-", 45))
+	fmt.Printf("%-15s %8d %10d %10d\n", "TOTAL", totalInput, totalConverted, totalRemaining)
+	fmt.Println()
+
+	return nil
 }
 
 func parseMemoryLimit(s string) (uint64, error) {
