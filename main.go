@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -24,7 +25,7 @@ func main() {
 		processCmd := flag.NewFlagSet("process", flag.ExitOnError)
 		inputDir := processCmd.String("input", "", "Input directory to process (required)")
 		outputFile := processCmd.String("output", "output.txt", "Output text file / directory")
-		processType := processCmd.String("type", "text", "Type of processing: 'text' (default), 'all' (synonym)")
+		processType := processCmd.String("type", "text", "Type of processing: 'text' (default), 'token' (words and spaces only)")
 		concurrency := processCmd.Int("multi", 100, "Number of concurrent workers")
 		replace := processCmd.Bool("r", false, "Replace existing files in output")
 		ramLimitStr := processCmd.String("ram-limit", "", "Soft memory limit (e.g., '1GB', '512MB'). If exceeded, pauses feeding workers.")
@@ -56,7 +57,7 @@ func main() {
 		fmt.Printf("Starting process (Type: %s, Workers: %d, Replace: %v, RAM Limit: %s)...\n", *processType, *concurrency, *replace, *ramLimitStr)
 		// Currently only 'all' logic exists, but structure is ready for more types
 
-		if err := runProcess(*inputDir, *outputFile, *concurrency, *replace, ramLimit); err != nil {
+		if err := runProcess(*inputDir, *outputFile, *processType, *concurrency, *replace, ramLimit); err != nil {
 			fmt.Printf("Error processing files: %v\n", err)
 			os.Exit(1)
 		}
@@ -208,7 +209,7 @@ type Job struct {
 }
 
 // Rewriting runProcess logic to support granular progress updates
-func runProcess(inputDir, outputDir string, workers int, replace bool, ramLimit uint64) error {
+func runProcess(inputDir, outputDir, processType string, workers int, replace bool, ramLimit uint64) error {
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return fmt.Errorf("could not create output directory: %w", err)
 	}
@@ -273,7 +274,7 @@ func runProcess(inputDir, outputDir string, workers int, replace bool, ramLimit 
 		go func() {
 			defer wg.Done() // Decrement when worker exits
 			for job := range jobs {
-				processFile(job.Path, inputDir, outputDir, replace, logIgnored, logError)
+				processFile(job.Path, inputDir, outputDir, processType, replace, logIgnored, logError)
 				progressChan <- true // Signal that one file is done
 			}
 		}()
@@ -340,7 +341,7 @@ func runProcess(inputDir, outputDir string, workers int, replace bool, ramLimit 
 	return nil
 }
 
-func processFile(path, inputDir, outputDir string, replace bool, logIgnored, logError chan<- string) {
+func processFile(path, inputDir, outputDir, processType string, replace bool, logIgnored, logError chan<- string) {
 	// Panic recovery for individual file processing
 	defer func() {
 		if r := recover(); r != nil {
@@ -372,13 +373,42 @@ func processFile(path, inputDir, outputDir string, replace bool, logIgnored, log
 		return
 	}
 
+	outputText := res.FullText
+
+	// If token mode, clean the text to only words and spaces
+	if processType == "token" {
+		outputText = cleanToTokens(outputText)
+	}
+
 	if err := os.MkdirAll(filepath.Dir(outPath), 0755); err != nil {
 		logError <- fmt.Sprintf("%s: mkdir error: %v", path, err)
 		return
 	}
 
-	if err := os.WriteFile(outPath, []byte(res.FullText), 0644); err != nil {
+	if err := os.WriteFile(outPath, []byte(outputText), 0644); err != nil {
 		logError <- fmt.Sprintf("%s: write error: %v", path, err)
 		return
 	}
+}
+
+// cleanToTokens removes all special characters, newlines, tabs, etc.
+// and returns only words separated by single spaces
+func cleanToTokens(text string) string {
+	// Replace common whitespace with spaces
+	text = strings.ReplaceAll(text, "\n", " ")
+	text = strings.ReplaceAll(text, "\r", " ")
+	text = strings.ReplaceAll(text, "\t", " ")
+
+	// Keep only letters, numbers, and spaces
+	re := regexp.MustCompile(`[^a-zA-Z0-9\s]`)
+	text = re.ReplaceAllString(text, " ")
+
+	// Collapse multiple spaces into single space
+	spaceRe := regexp.MustCompile(`\s+`)
+	text = spaceRe.ReplaceAllString(text, " ")
+
+	// Trim leading/trailing spaces
+	text = strings.TrimSpace(text)
+
+	return text
 }
