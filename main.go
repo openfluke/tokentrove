@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +32,7 @@ func main() {
 		replace := processCmd.Bool("r", false, "Replace existing files in output")
 		ramLimitStr := processCmd.String("ram-limit", "", "Soft memory limit (e.g., '1GB', '512MB'). If exceeded, pauses feeding workers.")
 		statusOnly := processCmd.Bool("status", false, "Show remaining files to convert by file type (no processing)")
+		cacheMode := processCmd.String("cache", "", "Cache mode: 'tokens' (extract unique words to uniq.txt)")
 
 		processCmd.Parse(os.Args[2:])
 
@@ -37,6 +40,20 @@ func main() {
 			fmt.Println("Error: -input directory is required")
 			processCmd.PrintDefaults()
 			os.Exit(1)
+		}
+
+		// Handle cache mode
+		if *cacheMode != "" {
+			if *cacheMode == "tokens" {
+				if err := buildTokenCache(*inputDir, *outputFile); err != nil {
+					fmt.Printf("Error building token cache: %v\n", err)
+					os.Exit(1)
+				}
+			} else {
+				fmt.Printf("Unknown cache mode: %s (use 'tokens')\n", *cacheMode)
+				os.Exit(1)
+			}
+			return
 		}
 
 		// Handle status mode
@@ -73,6 +90,109 @@ func printUsage() {
 	fmt.Println("\nCommands:")
 	fmt.Println("  process    Process a directory and extract text from all supported files")
 	fmt.Println("\nRun 'tokentrove <command> -h' for more information.")
+}
+
+func buildTokenCache(inputDir, outputDir string) error {
+	fmt.Println("Building token cache...")
+	fmt.Printf("Input:  %s\n", inputDir)
+	fmt.Printf("Output: %s\n\n", outputDir)
+
+	// Create output directory
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		return fmt.Errorf("could not create output directory: %w", err)
+	}
+
+	// Use a map to track unique words
+	uniqueWords := make(map[string]struct{})
+
+	// Count files first
+	var fileCount int
+	err := filepath.Walk(inputDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() || strings.HasPrefix(filepath.Base(path), ".") {
+			return nil
+		}
+		fileCount++
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Found %d files to scan...\n", fileCount)
+
+	// Process each file
+	processed := 0
+	err = filepath.Walk(inputDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() || strings.HasPrefix(filepath.Base(path), ".") {
+			return nil
+		}
+
+		// Read file content
+		file, err := os.Open(path)
+		if err != nil {
+			return nil
+		}
+		defer file.Close()
+
+		scanner := bufio.NewScanner(file)
+		scanner.Buffer(make([]byte, 1024*1024), 1024*1024) // 1MB buffer for long lines
+
+		for scanner.Scan() {
+			line := scanner.Text()
+			// Split by whitespace
+			words := strings.Fields(line)
+			for _, word := range words {
+				// Clean the word - lowercase and trim
+				word = strings.TrimSpace(word)
+				if word != "" {
+					uniqueWords[word] = struct{}{}
+				}
+			}
+		}
+
+		processed++
+		if processed%1000 == 0 || processed == fileCount {
+			fmt.Printf("Scanned: %d / %d files (%d unique tokens so far)\n", processed, fileCount, len(uniqueWords))
+		}
+
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	// Sort the words
+	sortedWords := make([]string, 0, len(uniqueWords))
+	for word := range uniqueWords {
+		sortedWords = append(sortedWords, word)
+	}
+	sort.Strings(sortedWords)
+
+	// Write to uniq.txt
+	outPath := filepath.Join(outputDir, "uniq.txt")
+	outFile, err := os.Create(outPath)
+	if err != nil {
+		return fmt.Errorf("could not create output file: %w", err)
+	}
+	defer outFile.Close()
+
+	writer := bufio.NewWriter(outFile)
+	for _, word := range sortedWords {
+		writer.WriteString(word)
+		writer.WriteString("\n")
+	}
+	writer.Flush()
+
+	fmt.Printf("\nDone! Found %d unique tokens.\n", len(sortedWords))
+	fmt.Printf("Written to: %s\n", outPath)
+
+	return nil
 }
 
 func showStatus(inputDir, outputDir string) error {

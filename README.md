@@ -58,6 +58,16 @@ Extension           Total  Converted  Remaining
 TOTAL                 230        135         95
 ```
 
+### Build Token Cache
+
+Extract all unique words/tokens from converted files into a single `uniq.txt`:
+
+```bash
+go run . process -input /home/samuel/data/token -output /home/samuel/data/cache -cache tokens
+```
+
+This scans all files in the input directory and creates `uniq.txt` containing every unique word, one per line, sorted alphabetically.
+
 ## Flags
 
 | Flag | Default | Description |
@@ -69,6 +79,7 @@ TOTAL                 230        135         95
 | `-r` | `false` | Replace existing files in output |
 | `-ram-limit` | (none) | Soft memory limit (e.g., `1GB`, `512MB`) |
 | `-status` | `false` | Show remaining files to convert (no processing) |
+| `-cache` | (none) | Cache mode: `tokens` (extract unique words to uniq.txt) |
 
 ## Processing Types
 
