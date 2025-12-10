@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/openfluke/tokentrove/pkg"
 )
@@ -26,6 +27,7 @@ func main() {
 		processType := processCmd.String("type", "text", "Type of processing: 'text' (default), 'all' (synonym)")
 		concurrency := processCmd.Int("multi", 100, "Number of concurrent workers")
 		replace := processCmd.Bool("r", false, "Replace existing files in output")
+		ramLimitStr := processCmd.String("ram-limit", "", "Soft memory limit (e.g., '1GB', '512MB'). If exceeded, pauses feeding workers.")
 
 		processCmd.Parse(os.Args[2:])
 
@@ -35,10 +37,16 @@ func main() {
 			os.Exit(1)
 		}
 
-		fmt.Printf("Starting process (Type: %s, Workers: %d, Replace: %v)...\n", *processType, *concurrency, *replace)
+		ramLimit, err := parseMemoryLimit(*ramLimitStr)
+		if err != nil {
+			fmt.Printf("Error checking RAM limit: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Printf("Starting process (Type: %s, Workers: %d, Replace: %v, RAM Limit: %s)...\n", *processType, *concurrency, *replace, *ramLimitStr)
 		// Currently only 'all' logic exists, but structure is ready for more types
 
-		if err := runProcess(*inputDir, *outputFile, *concurrency, *replace); err != nil {
+		if err := runProcess(*inputDir, *outputFile, *concurrency, *replace, ramLimit); err != nil {
 			fmt.Printf("Error processing files: %v\n", err)
 			os.Exit(1)
 		}
@@ -56,6 +64,32 @@ func printUsage() {
 	fmt.Println("\nRun 'tokentrove <command> -h' for more information.")
 }
 
+func parseMemoryLimit(s string) (uint64, error) {
+	if s == "" {
+		return 0, nil
+	}
+	s = strings.ToUpper(strings.TrimSpace(s))
+	var multiplier uint64 = 1
+	if strings.HasSuffix(s, "G") || strings.HasSuffix(s, "GB") {
+		multiplier = 1024 * 1024 * 1024
+		s = strings.TrimSuffix(strings.TrimSuffix(s, "GB"), "G")
+	} else if strings.HasSuffix(s, "M") || strings.HasSuffix(s, "MB") {
+		multiplier = 1024 * 1024
+		s = strings.TrimSuffix(strings.TrimSuffix(s, "MB"), "M")
+	} else if strings.HasSuffix(s, "K") || strings.HasSuffix(s, "KB") {
+		multiplier = 1024
+		s = strings.TrimSuffix(strings.TrimSuffix(s, "KB"), "K")
+	}
+
+	// Poor man's Atoi since we just stripped suffix
+	var val uint64
+	_, err := fmt.Sscanf(s, "%d", &val)
+	if err != nil {
+		return 0, fmt.Errorf("invalid memory format: %s", s)
+	}
+	return val * multiplier, nil
+}
+
 // Job represents a file to be processed
 type Job struct {
 	Path  string
@@ -63,7 +97,7 @@ type Job struct {
 }
 
 // Rewriting runProcess logic to support granular progress updates
-func runProcess(inputDir, outputDir string, workers int, replace bool) error {
+func runProcess(inputDir, outputDir string, workers int, replace bool, ramLimit uint64) error {
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return fmt.Errorf("could not create output directory: %w", err)
 	}
@@ -136,7 +170,21 @@ func runProcess(inputDir, outputDir string, workers int, replace bool) error {
 
 	// Producer
 	go func() {
+		var m runtime.MemStats
 		for index, path := range allFiles {
+			// RAM Throttling
+			if ramLimit > 0 {
+				for {
+					runtime.ReadMemStats(&m)
+					if m.Alloc < ramLimit {
+						break
+					}
+					// RAM usage too high, wait for workers to finish some jobs and GC to run
+					runtime.GC()
+					time.Sleep(100 * time.Millisecond)
+				}
+			}
+
 			jobs <- Job{Path: path, Index: index + 1}
 		}
 		close(jobs) // No more jobs will be sent
