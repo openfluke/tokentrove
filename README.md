@@ -32,7 +32,7 @@ go build .
 Convert all supported files from an input directory to clean token text files:
 
 ```bash
-go run . process -input /home/samuel/data/junk -output /home/samuel/data/token -multi 1000 -type token
+go run . process -input /home/samuel/data/junk -output /home/samuel/data/token -multi 1000 -type lowercase
 ```
 
 Use `-status` to check conversion progress:
@@ -40,49 +40,35 @@ Use `-status` to check conversion progress:
 go run . process -input /home/samuel/data/junk -output /home/samuel/data/token -status
 ```
 
-### Step 2: Build Token Cache
+### Step 2: Run Full Analysis (One Command)
 
-Extract all unique words and file list:
+Run all cache building steps automatically:
 
 ```bash
+go run . analyze -input /home/samuel/data/token -output /home/samuel/data/cache -ngrams 15
+```
+
+This runs:
+1. **Token cache** → `uniq.txt`, `files.txt`, `settings.txt`
+2. **Word-to-file index** → `fileuniqindex.txt`
+3. **N-gram frequency** → `2gramfreq.txt` through `15gramfreq.txt`
+
+---
+
+## Manual Steps (Alternative)
+
+If you prefer to run steps individually:
+
+```bash
+# Step A: Build token cache
 go run . process -input /home/samuel/data/token -output /home/samuel/data/cache -cache tokens
-```
 
-Creates:
-- `settings.txt` - Stores the input path
-- `uniq.txt` - All unique words, one per line, sorted
-- `files.txt` - Relative paths of all scanned files
-
-### Step 3: Build Word-to-File Index
-
-Create an index mapping each word to the files containing it:
-
-```bash
+# Step B: Build word-to-file index  
 go run . process -input /home/samuel/data/token -output /home/samuel/data/cache -cache index
-```
 
-Creates `fileuniqindex.txt`:
-```
-0,[1,5,23]
-```
-Word 0 appears in files 1, 5, 23
-
-### Step 4: Find Most Common Phrases (N-gram Frequency)
-
-Discover the most repeated word sequences across all files:
-
-```bash
+# Step C: Build n-gram frequency
 go run . process -input /home/samuel/data/token -output /home/samuel/data/cache -cache ngramfreq -ngrams 15
 ```
-
-Creates `2gramfreq.txt` through `15gramfreq.txt`, sorted by frequency:
-```
-5|23,1547
-100|45,892
-```
-Word sequence 5|23 appears 1547 times (most common 2-gram)
-
-Only keeps phrases appearing 2+ times.
 
 ---
 
@@ -105,13 +91,21 @@ go run . ngramfiles -cache /home/samuel/data/cache -ngrams 15
 |------|---------|-------------|
 | `-input` | (required) | Input directory to process |
 | `-output` | `output.txt` | Output directory for converted files |
-| `-type` | `text` | Processing type: `text` or `token` |
+| `-type` | `text` | Processing type: `text`, `token`, or `lowercase` |
 | `-multi` | `100` | Number of concurrent workers |
 | `-r` | `false` | Replace existing files in output |
 | `-ram-limit` | (none) | Soft memory limit (e.g., `1GB`, `512MB`) |
 | `-status` | `false` | Show remaining files to convert |
 | `-cache` | (none) | Cache mode: `tokens`, `index`, `ngrams`, or `ngramfreq` |
 | `-ngrams` | `15` | Max n-gram size |
+
+## Flags (analyze command)
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-input` | (required) | Input directory with token files |
+| `-output` | (required) | Output cache directory |
+| `-ngrams` | `15` | Max n-gram size for frequency analysis |
 
 ## Flags (ngramfiles command)
 
@@ -126,24 +120,12 @@ go run . ngramfiles -cache /home/samuel/data/cache -ngrams 15
 Preserves the original text formatting including newlines, tabs, and special characters.
 
 ### `token`
-Cleans the extracted text for tokenization:
-- Removes all `\n`, `\r`, `\t` characters
-- Removes all special characters (punctuation, symbols)
+Cleans the extracted text:
+- Removes newlines, tabs, special characters
 - Keeps only letters, numbers, and spaces
-- Collapses multiple spaces into single spaces
 
-**Before (text mode):**
-```
-Hello, World!
-This is a test...
-
-Line 3.
-```
-
-**After (token mode):**
-```
-Hello World This is a test Line 3
-```
+### `lowercase`
+Same as `token` but also converts everything to lowercase. Best for case-insensitive analysis.
 
 ## Supported Formats
 
