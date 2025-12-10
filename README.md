@@ -129,4 +129,4 @@ Two log files are created in the output directory:
 
 ## License
 
-MIT
+APACHE2
