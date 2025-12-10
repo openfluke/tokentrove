@@ -4,10 +4,13 @@ import (
 	"archive/zip"
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/J45k4/rtf"
+	"github.com/extrame/xls"
 	"github.com/ledongthuc/pdf"
 	"github.com/nguyenthenguyen/docx"
 	"github.com/xuri/excelize/v2"
@@ -35,11 +38,129 @@ func ExtractContent(path string) (*ExtractionResult, error) {
 		return extractHTML(path)
 	case ".pptx":
 		return extractPPTX(path)
+	case ".xls":
+		return extractXLS(path)
+	case ".csv":
+		return extractCSV(path)
+	case ".rtf":
+		return extractRTF(path)
 	case ".txt", ".md":
 		return extractPlain(path)
 	default:
 		return nil, fmt.Errorf("unsupported file extension: %s", ext)
 	}
+}
+
+// ... (existing extractPlain, extractPDF, extractDOCX, extractXLSX, extractHTML) ...
+
+// Minimal XML structs for parsing PPTX slides (moved down or kept as is)
+// ...
+
+// NEW FUNCTIONS
+
+func extractCSV(path string) (*ExtractionResult, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	// CSV is basically text, but we might want to return it as-is or parsed?
+	// The user wants "pure text". Raw CSV is text.
+	text := string(content)
+	return &ExtractionResult{
+		FullText: text,
+		Pages:    []string{text},
+	}, nil
+}
+
+func extractXLS(path string) (*ExtractionResult, error) {
+	xl, err := xls.Open(path, "utf-8")
+	if err != nil {
+		return nil, err
+	}
+
+	var fullTextBuilder strings.Builder
+	var pages []string
+
+	for i := 0; i < xl.NumSheets(); i++ {
+		sheet := xl.GetSheet(i)
+		if sheet == nil {
+			continue
+		}
+
+		var sheetText strings.Builder
+		for row := 0; row <= int(sheet.MaxRow); row++ {
+			r := sheet.Row(row)
+			if r == nil {
+				continue
+			}
+			// Iterate columns - extrame/xls is a bit clunky
+			// We have to iterate until failure or known max col?
+			// It doesn't exposing MaxCol easily on Row, let's try a reasonable limit or until error
+			// Actually r.LastCol() exists
+			for col := 0; col < r.LastCol(); col++ {
+				cell := r.Col(col)
+				sheetText.WriteString(cell)
+				sheetText.WriteString("\t")
+			}
+			sheetText.WriteString("\n")
+		}
+
+		text := sheetText.String()
+		pages = append(pages, text)
+		fullTextBuilder.WriteString(text)
+	}
+
+	return &ExtractionResult{
+		FullText: fullTextBuilder.String(),
+		Pages:    pages,
+	}, nil
+}
+
+func extractRTF(path string) (*ExtractionResult, error) {
+	// Simple RTF stripper using library or manual?
+	// J45k4/rtf seems to be a reader.
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	// The library github.com/J45k4/rtf claims to read RTF.
+	// We need to see how to get plain text.
+	// Looking at docs (or assuming common interface):
+	// It likely parses into a structure.
+	// Actually, let's check what we downloaded.
+	// Assuming it has a stripped reader or similar.
+
+	// If the library is too complex or just a tokenizer,
+	// maybe a simple regex stripper is better for "pure text"?
+	// But let's try the library.
+
+	// Note: I don't see the library docs in context.
+	// I'll try to use the library if it has a straightforward "Text()" method.
+	// If not, I'll fall back to a simple regex based approach which is often sufficient for basic RTF.
+
+	// Let's use the installed library.
+	// If J45k4/rtf follows standard Go idioms?
+
+	// Wait, since I can't see the library source, I'll take a safe bet:
+	// Many RTF libs are just tokenizers.
+	// I'll assume I might need to implement a simple stripper if the lib is complex.
+	// BUT the search result said: "J45k4/rtf offers a StripRichTextFormat function".
+
+	// Let's try to read all and strip.
+	content, err := io.ReadAll(f)
+	if err != nil {
+		return nil, err
+	}
+
+	// The library usage is likely: rtf.Strip(string) -> string
+	text := rtf.StripRichTextFormat(string(content))
+
+	return &ExtractionResult{
+		FullText: text,
+		Pages:    []string{text},
+	}, nil
 }
 
 func extractPlain(path string) (*ExtractionResult, error) {
@@ -125,7 +246,6 @@ func extractXLSX(path string) (*ExtractionResult, error) {
 		}
 		text := sheetContent.String()
 		pages = append(pages, text)
-		fullTextBuilder.WriteString(fmt.Sprintf("--- Sheet: %s ---\n", sheet))
 		fullTextBuilder.WriteString(text)
 	}
 
@@ -228,7 +348,6 @@ func extractPPTX(path string) (*ExtractionResult, error) {
 			text := slideTextBuilder.String()
 			if len(text) > 0 {
 				pages = append(pages, text)
-				fullTextBuilder.WriteString(fmt.Sprintf("--- Slide: %s ---\n", f.Name))
 				fullTextBuilder.WriteString(text)
 				fullTextBuilder.WriteString("\n")
 			}

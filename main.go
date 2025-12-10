@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -22,7 +23,7 @@ func main() {
 		processCmd := flag.NewFlagSet("process", flag.ExitOnError)
 		inputDir := processCmd.String("input", "", "Input directory to process (required)")
 		outputFile := processCmd.String("output", "output.txt", "Output text file / directory")
-		processType := processCmd.String("type", "all", "Type of processing: 'all' (default: extract text from all supported files)")
+		processType := processCmd.String("type", "text", "Type of processing: 'text' (default), 'all' (synonym)")
 		concurrency := processCmd.Int("multi", 100, "Number of concurrent workers")
 		replace := processCmd.Bool("r", false, "Replace existing files in output")
 
@@ -155,6 +156,7 @@ func runProcess(inputDir, outputDir string, workers int, replace bool) error {
 		for range progressChan {
 			finished++
 			if finished%notifyStep == 0 || finished == totalFiles {
+				runtime.GC() // Manual GC after each batch
 				percent := float64(finished) / float64(totalFiles) * 100
 				fmt.Printf("Progress: %d / %d (%.1f%%)\n", finished, totalFiles, percent)
 			}
