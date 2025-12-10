@@ -25,79 +25,100 @@ cd tokentrove
 go build .
 ```
 
-## Usage
+## Workflow
 
-### Basic Processing
+### Step 1: Convert Documents to Token Text
 
-Convert all supported files from an input directory to text files:
+Convert all supported files from an input directory to clean token text files:
 
 ```bash
 go run . process -input /home/samuel/data/junk -output /home/samuel/data/token -multi 1000 -type token
 ```
 
-### Check Conversion Status
-
-See how many files of each type remain to be converted:
-
+Use `-status` to check conversion progress:
 ```bash
 go run . process -input /home/samuel/data/junk -output /home/samuel/data/token -status
 ```
 
-Example output:
-```
-=== Conversion Status ===
-Input:  /home/samuel/data/junk
-Output: /home/samuel/data/token
+### Step 2: Build Token Cache
 
-Extension           Total  Converted  Remaining
----------------------------------------------
-.pdf                  150         75         75
-.docx                  50         50          0
-.xlsx                  30         10         20
----------------------------------------------
-TOTAL                 230        135         95
-```
-
-### Build Token Cache
-
-Extract all unique words/tokens from converted files:
+Extract all unique words and file list:
 
 ```bash
 go run . process -input /home/samuel/data/token -output /home/samuel/data/cache -cache tokens
 ```
 
-Creates three files in the output directory:
+Creates:
 - `settings.txt` - Stores the input path
 - `uniq.txt` - All unique words, one per line, sorted
 - `files.txt` - Relative paths of all scanned files
 
-### Build Word-to-File Index
+### Step 3: Build Word-to-File Index
 
-After building the token cache, create an index mapping words to files:
+Create an index mapping each word to the files containing it:
 
 ```bash
 go run . process -input /home/samuel/data/token -output /home/samuel/data/cache -cache index
 ```
 
-Creates `fileuniqindex.txt` where each line maps a word index to file indices:
+Creates `fileuniqindex.txt`:
 ```
 0,[1,5,23]
-1,[2,4,5,100]
 ```
-- `0,[1,5,23]` means word at index 0 in `uniq.txt` appears in files 1, 5, 23 from `files.txt`
+Word 0 appears in files 1, 5, 23
 
-## Flags
+### Step 4: Find Most Common Phrases (N-gram Frequency)
+
+Discover the most repeated word sequences across all files:
+
+```bash
+go run . process -input /home/samuel/data/token -output /home/samuel/data/cache -cache ngramfreq -ngrams 15
+```
+
+Creates `2gramfreq.txt` through `15gramfreq.txt`, sorted by frequency:
+```
+5|23,1547
+100|45,892
+```
+Word sequence 5|23 appears 1547 times (most common 2-gram)
+
+Only keeps phrases appearing 2+ times.
+
+---
+
+## Optional: Build Full N-gram Index
+
+If you need to know which FILES contain each n-gram (not just frequency):
+
+```bash
+go run . process -input /home/samuel/data/token -output /home/samuel/data/cache -cache ngrams -ngrams 15
+```
+
+Then build reverse index (file → ngrams):
+```bash
+go run . ngramfiles -cache /home/samuel/data/cache -ngrams 15
+```
+
+## Flags (process command)
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-input` | (required) | Input directory to process |
 | `-output` | `output.txt` | Output directory for converted files |
-| `-type` | `text` | Processing type: `text` (preserve formatting) or `token` (words and spaces only) |
+| `-type` | `text` | Processing type: `text` or `token` |
 | `-multi` | `100` | Number of concurrent workers |
 | `-r` | `false` | Replace existing files in output |
 | `-ram-limit` | (none) | Soft memory limit (e.g., `1GB`, `512MB`) |
-| `-status` | `false` | Show remaining files to convert (no processing) |
-| `-cache` | (none) | Cache mode: `tokens` or `index` |
+| `-status` | `false` | Show remaining files to convert |
+| `-cache` | (none) | Cache mode: `tokens`, `index`, `ngrams`, or `ngramfreq` |
+| `-ngrams` | `15` | Max n-gram size |
+
+## Flags (ngramfiles command)
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-cache` | (required) | Cache directory containing ngram files |
+| `-ngrams` | `15` | Max n-gram size |
 
 ## Processing Types
 

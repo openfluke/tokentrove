@@ -32,7 +32,8 @@ func main() {
 		replace := processCmd.Bool("r", false, "Replace existing files in output")
 		ramLimitStr := processCmd.String("ram-limit", "", "Soft memory limit (e.g., '1GB', '512MB'). If exceeded, pauses feeding workers.")
 		statusOnly := processCmd.Bool("status", false, "Show remaining files to convert by file type (no processing)")
-		cacheMode := processCmd.String("cache", "", "Cache mode: 'tokens' (extract unique words to uniq.txt)")
+		cacheMode := processCmd.String("cache", "", "Cache mode: 'tokens', 'index', or 'ngrams'")
+		ngramMax := processCmd.Int("ngrams", 15, "Max n-gram size (used with -cache ngrams)")
 
 		processCmd.Parse(os.Args[2:])
 
@@ -55,8 +56,23 @@ func main() {
 					fmt.Printf("Error building index cache: %v\n", err)
 					os.Exit(1)
 				}
+			case "ngrams":
+				if err := buildNgramCache(*outputFile, *ngramMax); err != nil {
+					fmt.Printf("Error building ngram cache: %v\n", err)
+					os.Exit(1)
+				}
+			case "ngramfiles":
+				if err := buildNgramFilesCache(*outputFile, *ngramMax); err != nil {
+					fmt.Printf("Error building ngramfiles cache: %v\n", err)
+					os.Exit(1)
+				}
+			case "ngramfreq":
+				if err := buildNgramFreqCache(*outputFile, *ngramMax); err != nil {
+					fmt.Printf("Error building ngramfreq cache: %v\n", err)
+					os.Exit(1)
+				}
 			default:
-				fmt.Printf("Unknown cache mode: %s (use 'tokens' or 'index')\n", *cacheMode)
+				fmt.Printf("Unknown cache mode: %s (use 'tokens', 'index', 'ngrams', 'ngramfiles', or 'ngramfreq')\n", *cacheMode)
 				os.Exit(1)
 			}
 			return
@@ -85,6 +101,24 @@ func main() {
 			os.Exit(1)
 		}
 
+	case "ngramfiles":
+		ngramfilesCmd := flag.NewFlagSet("ngramfiles", flag.ExitOnError)
+		cacheDir := ngramfilesCmd.String("cache", "", "Cache directory containing ngram files (required)")
+		ngramMax := ngramfilesCmd.Int("ngrams", 15, "Max n-gram size")
+
+		ngramfilesCmd.Parse(os.Args[2:])
+
+		if *cacheDir == "" {
+			fmt.Println("Error: -cache directory is required")
+			ngramfilesCmd.PrintDefaults()
+			os.Exit(1)
+		}
+
+		if err := buildNgramFilesCache(*cacheDir, *ngramMax); err != nil {
+			fmt.Printf("Error building ngramfiles cache: %v\n", err)
+			os.Exit(1)
+		}
+
 	default:
 		printUsage()
 		os.Exit(1)
@@ -94,7 +128,8 @@ func main() {
 func printUsage() {
 	fmt.Println("Usage: tokentrove <command> [arguments]")
 	fmt.Println("\nCommands:")
-	fmt.Println("  process    Process a directory and extract text from all supported files")
+	fmt.Println("  process      Process a directory and extract text from all supported files")
+	fmt.Println("  ngramfiles   Build file → ngram reverse index from existing ngram cache")
 	fmt.Println("\nRun 'tokentrove <command> -h' for more information.")
 }
 
@@ -376,6 +411,436 @@ func buildIndexCache(inputDir, outputDir string) error {
 	fmt.Printf("\nDone! Index written to: %s\n", indexPath)
 	fmt.Printf("Mapped %d words to their file locations\n", len(wordToFiles))
 
+	return nil
+}
+
+func buildNgramCache(outputDir string, maxN int) error {
+	fmt.Printf("Building n-gram cache (2 to %d grams)...\n", maxN)
+	fmt.Printf("Cache dir: %s\n\n", outputDir)
+
+	if maxN < 2 {
+		return fmt.Errorf("ngrams must be at least 2")
+	}
+
+	// Load settings.txt to get the original input path for token files
+	settingsPath := filepath.Join(outputDir, "settings.txt")
+	settingsData, err := os.ReadFile(settingsPath)
+	if err != nil {
+		return fmt.Errorf("could not read settings.txt (run -cache tokens first): %w", err)
+	}
+
+	var tokenInputDir string
+	for _, line := range strings.Split(string(settingsData), "\n") {
+		if strings.HasPrefix(line, "input=") {
+			tokenInputDir = strings.TrimPrefix(line, "input=")
+			break
+		}
+	}
+	if tokenInputDir == "" {
+		return fmt.Errorf("could not find input path in settings.txt")
+	}
+	fmt.Printf("Token files dir: %s\n", tokenInputDir)
+
+	// Load uniq.txt into map (word -> index)
+	uniqPath := filepath.Join(outputDir, "uniq.txt")
+	uniqFile, err := os.Open(uniqPath)
+	if err != nil {
+		return fmt.Errorf("could not open uniq.txt: %w", err)
+	}
+	defer uniqFile.Close()
+
+	wordToIndex := make(map[string]int)
+	scanner := bufio.NewScanner(uniqFile)
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	wordIdx := 0
+	for scanner.Scan() {
+		wordToIndex[scanner.Text()] = wordIdx
+		wordIdx++
+	}
+	fmt.Printf("Loaded %d unique words\n", len(wordToIndex))
+
+	// Load files.txt
+	filesPath := filepath.Join(outputDir, "files.txt")
+	filesFile, err := os.Open(filesPath)
+	if err != nil {
+		return fmt.Errorf("could not open files.txt: %w", err)
+	}
+	defer filesFile.Close()
+
+	var filesList []string
+	scanner = bufio.NewScanner(filesFile)
+	for scanner.Scan() {
+		filesList = append(filesList, scanner.Text())
+	}
+	fmt.Printf("Loaded %d files\n\n", len(filesList))
+
+	// For each n from 2 to maxN, we need:
+	// - uniqNgram.txt: unique n-grams as word indices (e.g., "0|5|23")
+	// - Ngramindex.txt: ngram index -> file indices
+
+	for n := 2; n <= maxN; n++ {
+		fmt.Printf("Processing %d-grams...\n", n)
+
+		// Map: ngram string (e.g., "0|5|23") -> ngram index
+		ngramToIndex := make(map[string]int)
+		// Map: ngram index -> set of file indices
+		ngramToFiles := make(map[int]map[int]struct{})
+		ngramCount := 0
+
+		for fileIdx, relPath := range filesList {
+			fullPath := filepath.Join(tokenInputDir, relPath)
+
+			file, err := os.Open(fullPath)
+			if err != nil {
+				continue
+			}
+
+			// Read all words from file
+			var words []int
+			scanner := bufio.NewScanner(file)
+			scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+			for scanner.Scan() {
+				for _, word := range strings.Fields(scanner.Text()) {
+					if idx, ok := wordToIndex[strings.TrimSpace(word)]; ok {
+						words = append(words, idx)
+					}
+				}
+			}
+			file.Close()
+
+			// Slide window of size n
+			for i := 0; i <= len(words)-n; i++ {
+				// Build ngram key
+				var parts []string
+				for j := 0; j < n; j++ {
+					parts = append(parts, fmt.Sprintf("%d", words[i+j]))
+				}
+				ngramKey := strings.Join(parts, "|")
+
+				// Get or create ngram index
+				ngramIdx, exists := ngramToIndex[ngramKey]
+				if !exists {
+					ngramIdx = ngramCount
+					ngramToIndex[ngramKey] = ngramIdx
+					ngramCount++
+				}
+
+				// Track file
+				if ngramToFiles[ngramIdx] == nil {
+					ngramToFiles[ngramIdx] = make(map[int]struct{})
+				}
+				ngramToFiles[ngramIdx][fileIdx] = struct{}{}
+			}
+
+			if (fileIdx+1)%5000 == 0 {
+				fmt.Printf("  Scanned %d / %d files (%d unique %d-grams)\n", fileIdx+1, len(filesList), ngramCount, n)
+			}
+		}
+
+		fmt.Printf("  Found %d unique %d-grams\n", ngramCount, n)
+
+		// Write uniqNgram.txt
+		uniqNgramPath := filepath.Join(outputDir, fmt.Sprintf("uniq%dgram.txt", n))
+		uniqNgramFile, err := os.Create(uniqNgramPath)
+		if err != nil {
+			return fmt.Errorf("could not create %s: %w", uniqNgramPath, err)
+		}
+
+		// We need to write in order of index, so build reverse map
+		indexToNgram := make([]string, ngramCount)
+		for ngram, idx := range ngramToIndex {
+			indexToNgram[idx] = ngram
+		}
+
+		writer := bufio.NewWriter(uniqNgramFile)
+		for _, ngram := range indexToNgram {
+			writer.WriteString(ngram)
+			writer.WriteString("\n")
+		}
+		writer.Flush()
+		uniqNgramFile.Close()
+
+		// Write Ngramindex.txt
+		indexPath := filepath.Join(outputDir, fmt.Sprintf("%dgramindex.txt", n))
+		indexFile, err := os.Create(indexPath)
+		if err != nil {
+			return fmt.Errorf("could not create %s: %w", indexPath, err)
+		}
+
+		writer = bufio.NewWriter(indexFile)
+		for ngramIdx := 0; ngramIdx < ngramCount; ngramIdx++ {
+			fileIndices := ngramToFiles[ngramIdx]
+			indices := make([]int, 0, len(fileIndices))
+			for fIdx := range fileIndices {
+				indices = append(indices, fIdx)
+			}
+			sort.Ints(indices)
+
+			var sb strings.Builder
+			sb.WriteString(fmt.Sprintf("%d,[", ngramIdx))
+			for j, fIdx := range indices {
+				if j > 0 {
+					sb.WriteString(",")
+				}
+				sb.WriteString(fmt.Sprintf("%d", fIdx))
+			}
+			sb.WriteString("]\n")
+			writer.WriteString(sb.String())
+		}
+		writer.Flush()
+		indexFile.Close()
+
+		fmt.Printf("  Written: %s, %s\n", uniqNgramPath, indexPath)
+	}
+
+	fmt.Println("\nDone!")
+	return nil
+}
+
+func buildNgramFreqCache(outputDir string, maxN int) error {
+	fmt.Printf("Building n-gram frequency cache (2 to %d grams, min 2 occurrences)...\n", maxN)
+	fmt.Printf("Cache dir: %s\n\n", outputDir)
+
+	if maxN < 2 {
+		return fmt.Errorf("ngrams must be at least 2")
+	}
+
+	// Load settings.txt to get the original input path for token files
+	settingsPath := filepath.Join(outputDir, "settings.txt")
+	settingsData, err := os.ReadFile(settingsPath)
+	if err != nil {
+		return fmt.Errorf("could not read settings.txt (run -cache tokens first): %w", err)
+	}
+
+	var tokenInputDir string
+	for _, line := range strings.Split(string(settingsData), "\n") {
+		if strings.HasPrefix(line, "input=") {
+			tokenInputDir = strings.TrimPrefix(line, "input=")
+			break
+		}
+	}
+	if tokenInputDir == "" {
+		return fmt.Errorf("could not find input path in settings.txt")
+	}
+	fmt.Printf("Token files dir: %s\n", tokenInputDir)
+
+	// Load uniq.txt into map (word -> index)
+	uniqPath := filepath.Join(outputDir, "uniq.txt")
+	uniqFile, err := os.Open(uniqPath)
+	if err != nil {
+		return fmt.Errorf("could not open uniq.txt: %w", err)
+	}
+	defer uniqFile.Close()
+
+	wordToIndex := make(map[string]int)
+	scanner := bufio.NewScanner(uniqFile)
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	wordIdx := 0
+	for scanner.Scan() {
+		wordToIndex[scanner.Text()] = wordIdx
+		wordIdx++
+	}
+	fmt.Printf("Loaded %d unique words\n", len(wordToIndex))
+
+	// Load files.txt
+	filesPath := filepath.Join(outputDir, "files.txt")
+	filesFile, err := os.Open(filesPath)
+	if err != nil {
+		return fmt.Errorf("could not open files.txt: %w", err)
+	}
+	defer filesFile.Close()
+
+	var filesList []string
+	scanner = bufio.NewScanner(filesFile)
+	for scanner.Scan() {
+		filesList = append(filesList, scanner.Text())
+	}
+	fmt.Printf("Loaded %d files\n\n", len(filesList))
+
+	for n := 2; n <= maxN; n++ {
+		fmt.Printf("Processing %d-grams...\n", n)
+
+		// Map: ngram string -> count (total occurrences across all files)
+		ngramCount := make(map[string]int)
+
+		for fileIdx, relPath := range filesList {
+			fullPath := filepath.Join(tokenInputDir, relPath)
+
+			file, err := os.Open(fullPath)
+			if err != nil {
+				continue
+			}
+
+			// Read all words from file
+			var words []int
+			scanner := bufio.NewScanner(file)
+			scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+			for scanner.Scan() {
+				for _, word := range strings.Fields(scanner.Text()) {
+					if idx, ok := wordToIndex[strings.TrimSpace(word)]; ok {
+						words = append(words, idx)
+					}
+				}
+			}
+			file.Close()
+
+			// Slide window of size n, count occurrences
+			for i := 0; i <= len(words)-n; i++ {
+				var parts []string
+				for j := 0; j < n; j++ {
+					parts = append(parts, fmt.Sprintf("%d", words[i+j]))
+				}
+				ngramKey := strings.Join(parts, "|")
+				ngramCount[ngramKey]++
+			}
+
+			if (fileIdx+1)%5000 == 0 {
+				fmt.Printf("  Scanned %d / %d files\n", fileIdx+1, len(filesList))
+			}
+		}
+
+		// Filter to only keep ngrams with count >= 2
+		type ngramFreq struct {
+			ngram string
+			count int
+		}
+		var filtered []ngramFreq
+		for ngram, count := range ngramCount {
+			if count >= 2 {
+				filtered = append(filtered, ngramFreq{ngram, count})
+			}
+		}
+
+		// Sort by count descending
+		sort.Slice(filtered, func(i, j int) bool {
+			return filtered[i].count > filtered[j].count
+		})
+
+		fmt.Printf("  Found %d %d-grams appearing 2+ times (out of %d total)\n", len(filtered), n, len(ngramCount))
+
+		// Write Ngramfreq.txt
+		freqPath := filepath.Join(outputDir, fmt.Sprintf("%dgramfreq.txt", n))
+		freqFile, err := os.Create(freqPath)
+		if err != nil {
+			return fmt.Errorf("could not create %s: %w", freqPath, err)
+		}
+
+		writer := bufio.NewWriter(freqFile)
+		for _, nf := range filtered {
+			writer.WriteString(fmt.Sprintf("%s,%d\n", nf.ngram, nf.count))
+		}
+		writer.Flush()
+		freqFile.Close()
+
+		fmt.Printf("  Written: %s\n", freqPath)
+
+		// Clear memory
+		ngramCount = nil
+	}
+
+	fmt.Println("\nDone!")
+	return nil
+}
+
+func buildNgramFilesCache(outputDir string, maxN int) error {
+	fmt.Printf("Building n-gram → files reverse index (2 to %d grams)...\n", maxN)
+	fmt.Printf("Cache dir: %s\n\n", outputDir)
+
+	if maxN < 2 {
+		return fmt.Errorf("ngrams must be at least 2")
+	}
+
+	// Load files.txt to get file count
+	filesPath := filepath.Join(outputDir, "files.txt")
+	filesFile, err := os.Open(filesPath)
+	if err != nil {
+		return fmt.Errorf("could not open files.txt: %w", err)
+	}
+	defer filesFile.Close()
+
+	var fileCount int
+	scanner := bufio.NewScanner(filesFile)
+	for scanner.Scan() {
+		fileCount++
+	}
+	fmt.Printf("Found %d files\n\n", fileCount)
+
+	// For each n from 2 to maxN, read the Ngramindex.txt and create reverse mapping
+	for n := 2; n <= maxN; n++ {
+		fmt.Printf("Processing %d-grams...\n", n)
+
+		// Read Ngramindex.txt
+		indexPath := filepath.Join(outputDir, fmt.Sprintf("%dgramindex.txt", n))
+		indexFile, err := os.Open(indexPath)
+		if err != nil {
+			fmt.Printf("  Skipping: could not open %s\n", indexPath)
+			continue
+		}
+
+		// fileToNgrams[fileIndex] = list of ngram indices
+		fileToNgrams := make(map[int][]int)
+
+		scanner := bufio.NewScanner(indexFile)
+		scanner.Buffer(make([]byte, 10*1024*1024), 10*1024*1024) // 10MB buffer for long lines
+
+		for scanner.Scan() {
+			line := scanner.Text()
+			// Format: ngramIndex,[fileIndex1,fileIndex2,...]
+			// Find the comma separating index from array
+			commaIdx := strings.Index(line, ",[")
+			if commaIdx == -1 {
+				continue
+			}
+
+			ngramIdxStr := line[:commaIdx]
+			ngramIdx := 0
+			fmt.Sscanf(ngramIdxStr, "%d", &ngramIdx)
+
+			// Parse file indices from [1,2,3]
+			arrayPart := line[commaIdx+1:]
+			arrayPart = strings.TrimPrefix(arrayPart, "[")
+			arrayPart = strings.TrimSuffix(arrayPart, "]")
+
+			if arrayPart != "" {
+				for _, fIdxStr := range strings.Split(arrayPart, ",") {
+					var fIdx int
+					fmt.Sscanf(fIdxStr, "%d", &fIdx)
+					fileToNgrams[fIdx] = append(fileToNgrams[fIdx], ngramIdx)
+				}
+			}
+		}
+		indexFile.Close()
+
+		// Write Ngramfiles.txt
+		filesOutPath := filepath.Join(outputDir, fmt.Sprintf("%dgramfiles.txt", n))
+		filesOutFile, err := os.Create(filesOutPath)
+		if err != nil {
+			return fmt.Errorf("could not create %s: %w", filesOutPath, err)
+		}
+
+		writer := bufio.NewWriter(filesOutFile)
+		for fileIdx := 0; fileIdx < fileCount; fileIdx++ {
+			ngrams := fileToNgrams[fileIdx]
+			sort.Ints(ngrams)
+
+			var sb strings.Builder
+			sb.WriteString(fmt.Sprintf("%d,[", fileIdx))
+			for j, nIdx := range ngrams {
+				if j > 0 {
+					sb.WriteString(",")
+				}
+				sb.WriteString(fmt.Sprintf("%d", nIdx))
+			}
+			sb.WriteString("]\n")
+			writer.WriteString(sb.String())
+		}
+		writer.Flush()
+		filesOutFile.Close()
+
+		fmt.Printf("  Written: %s\n", filesOutPath)
+	}
+
+	fmt.Println("\nDone!")
 	return nil
 }
 
