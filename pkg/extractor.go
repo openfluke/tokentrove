@@ -72,7 +72,14 @@ func extractCSV(path string) (*ExtractionResult, error) {
 	}, nil
 }
 
-func extractXLS(path string) (*ExtractionResult, error) {
+func extractXLS(path string) (res *ExtractionResult, err error) {
+	// Panic recovery for bad XLS files (library can panic)
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("xls library panic: %v", r)
+		}
+	}()
+
 	xl, err := xls.Open(path, "utf-8")
 	if err != nil {
 		return nil, err
@@ -93,11 +100,9 @@ func extractXLS(path string) (*ExtractionResult, error) {
 			if r == nil {
 				continue
 			}
-			// Iterate columns - extrame/xls is a bit clunky
-			// We have to iterate until failure or known max col?
-			// It doesn't exposing MaxCol easily on Row, let's try a reasonable limit or until error
-			// Actually r.LastCol() exists
-			for col := 0; col < r.LastCol(); col++ {
+			// Safety check for LastCol
+			lastCol := r.LastCol()
+			for col := 0; col < lastCol; col++ {
 				cell := r.Col(col)
 				sheetText.WriteString(cell)
 				sheetText.WriteString("\t")

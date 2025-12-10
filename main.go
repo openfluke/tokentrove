@@ -182,6 +182,13 @@ func runProcess(inputDir, outputDir string, workers int, replace bool) error {
 }
 
 func processFile(path, inputDir, outputDir string, replace bool, logIgnored, logError chan<- string) {
+	// Panic recovery for individual file processing
+	defer func() {
+		if r := recover(); r != nil {
+			logError <- fmt.Sprintf("%s: PANIC during processing: %v", path, r)
+		}
+	}()
+
 	relPath, err := filepath.Rel(inputDir, path)
 	if err != nil {
 		logError <- fmt.Sprintf("%s: relative path error %v", path, err)
