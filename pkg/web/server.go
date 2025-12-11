@@ -490,10 +490,19 @@ func generateTopNgramsReport(job *ReportJob, config *CacheConfig, outPath string
 
 	for n := 2; n <= config.MaxN; n++ {
 		updateProgress(job, n-2, config.MaxN-2, fmt.Sprintf("Processing %d-grams", n))
-		ngrams := loadNgramsFreqOnly(config.CacheDir, n, wordIndex, 100)
+		ngrams := loadNgramsFreqOnly(config.CacheDir, n, wordIndex, 200) // Load more to account for filtering
 		key := fmt.Sprintf("%dgrams", n)
+		count := 0
 		for _, ng := range ngrams {
+			// Skip numeric-only n-grams if requested
+			if job.SkipNumeric && isNumericOnly(ng.words) {
+				continue
+			}
 			result[key] = append(result[key], map[string]interface{}{"phrase": strings.Join(ng.words, " "), "count": ng.count})
+			count++
+			if count >= 100 {
+				break
+			}
 		}
 	}
 

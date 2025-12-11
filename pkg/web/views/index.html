@@ -149,10 +149,14 @@
         let ws, stats, currentN = 2, offset = 0;
         const limit = 30;
 
-        document.getElementById('reportType').onchange = (e) => {
-            document.getElementById('reportQuery').classList.toggle('hidden', e.target.value !== 'search');
-            document.getElementById('recurringOptions').classList.toggle('hidden', !['recurring_text', 'linked_ngrams', 'best_chains'].includes(e.target.value));
-        };
+        function updateReportOptions() {
+            const type = document.getElementById('reportType').value;
+            document.getElementById('reportQuery').classList.toggle('hidden', type !== 'search');
+            document.getElementById('recurringOptions').classList.toggle('hidden', !['top_ngrams', 'recurring_text', 'linked_ngrams', 'best_chains'].includes(type));
+        }
+        document.getElementById('reportType').onchange = updateReportOptions;
+        // Show options immediately on page load
+        updateReportOptions();
 
         function showView(v) {
             document.getElementById('mainView').classList.toggle('hidden', v !== 'main');
@@ -391,14 +395,57 @@
                 html += '</div>';
                 document.getElementById('reportContent').innerHTML = html;
             } else if (result.data) {
-                let html = '';
-                Object.keys(result.data).forEach(key => {
-                    if (Array.isArray(result.data[key])) {
+                // Check if this is a top_ngrams report (has keys like "2grams", "3grams")
+                const keys = Object.keys(result.data).filter(k => Array.isArray(result.data[k]));
+                const isNgramReport = keys.some(k => /^\d+grams$/.test(k));
+                
+                if (isNgramReport) {
+                    // Sort keys by n-gram size descending (15grams first, 2grams last)
+                    keys.sort((a, b) => parseInt(b) - parseInt(a));
+                    
+                    // Create tabbed interface
+                    let html = '<div class="mb-4 flex flex-wrap gap-1">';
+                    keys.forEach((key, idx) => {
+                        const n = key.replace('grams', '');
+                        const count = result.data[key]?.length || 0;
+                        html += `<button onclick="showNgramTab('${key}')" id="tab-${key}" class="px-3 py-1 rounded text-sm ${idx === 0 ? 'bg-indigo-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}">${n}-gram (${count})</button>`;
+                    });
+                    html += '</div>';
+                    
+                    // Create content for each tab
+                    keys.forEach((key, idx) => {
+                        const items = result.data[key] || [];
+                        html += `<div id="content-${key}" class="${idx === 0 ? '' : 'hidden'} space-y-1">`;
+                        items.forEach(item => {
+                            html += `<div class="bg-gray-800 rounded px-3 py-2 flex justify-between"><span class="text-gray-200">${item.phrase || ''}</span><span class="text-pink-400 font-mono">${(item.count || 0).toLocaleString()}</span></div>`;
+                        });
+                        if (items.length === 0) {
+                            html += '<div class="text-gray-500 text-sm">No results</div>';
+                        }
+                        html += '</div>';
+                    });
+                    
+                    document.getElementById('reportContent').innerHTML = html;
+                    
+                    // Add tab switching function
+                    window.showNgramTab = function(key) {
+                        keys.forEach(k => {
+                            document.getElementById('content-' + k)?.classList.toggle('hidden', k !== key);
+                            document.getElementById('tab-' + k)?.classList.toggle('bg-indigo-600', k === key);
+                            document.getElementById('tab-' + k)?.classList.toggle('text-white', k === key);
+                            document.getElementById('tab-' + k)?.classList.toggle('bg-gray-700', k !== key);
+                            document.getElementById('tab-' + k)?.classList.toggle('text-gray-300', k !== key);
+                        });
+                    };
+                } else {
+                    // Generic data display
+                    let html = '';
+                    keys.forEach(key => {
                         html += `<div class="mb-4"><h3 class="text-sm text-gray-400 mb-2">${key}</h3>`;
-                        html += '<div class="space-y-1">' + result.data[key].slice(0, 30).map(item => `<div class="bg-gray-800 rounded px-3 py-2 flex justify-between"><span>${item.phrase || ''}</span><span class="text-pink-400">${item.count || ''}</span></div>`).join('') + '</div></div>';
-                    }
-                });
-                document.getElementById('reportContent').innerHTML = html || '<pre>' + JSON.stringify(result.data, null, 2) + '</pre>';
+                        html += '<div class="space-y-1">' + result.data[key].slice(0, 100).map(item => `<div class="bg-gray-800 rounded px-3 py-2 flex justify-between"><span>${item.phrase || ''}</span><span class="text-pink-400">${item.count || ''}</span></div>`).join('') + '</div></div>';
+                    });
+                    document.getElementById('reportContent').innerHTML = html || '<pre>' + JSON.stringify(result.data, null, 2) + '</pre>';
+                }
             } else if (result.text) {
                 document.getElementById('reportContent').innerHTML = `<pre class="whitespace-pre-wrap text-xs">${result.text}</pre>`;
             }
