@@ -1007,21 +1007,46 @@ func generateBestChainsReport(job *ReportJob, config *CacheConfig, outPath strin
 	endsWith := make(map[string][]ngramEntry)
 	startsWith := make(map[string][]ngramEntry)
 
+	// Parallel loading of n-grams
+	type loadResult struct {
+		entries []ngramEntry
+		n       int
+	}
+	resultChan := make(chan loadResult, config.MaxN-minN+1)
+	var wg sync.WaitGroup
+
 	for n := minN; n <= config.MaxN; n++ {
-		updateProgress(job, (n-minN)*10, 100, fmt.Sprintf("Loading %d-grams (top %d)...", n, topN))
-
-		ngrams := loadNgramsWithFiles(config.CacheDir, n, wordIndex, topN)
-		for _, ng := range ngrams {
-			if len(ng.words) < 2 || (job.SkipNumeric && isNumericOnly(ng.words)) {
-				continue
+		wg.Add(1)
+		go func(nSize int) {
+			defer wg.Done()
+			ngrams := loadNgramsWithFiles(config.CacheDir, nSize, wordIndex, topN)
+			var entries []ngramEntry
+			for _, ng := range ngrams {
+				if len(ng.words) < 2 || (job.SkipNumeric && isNumericOnly(ng.words)) {
+					continue
+				}
+				entries = append(entries, ngramEntry{words: ng.words, n: nSize, files: ng.files, count: ng.count})
 			}
+			resultChan <- loadResult{entries: entries, n: nSize}
+		}(n)
+	}
 
-			entry := ngramEntry{words: ng.words, n: n, files: ng.files, count: ng.count}
+	// Wait and collect results
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
 
-			endKey := strings.Join(ng.words[len(ng.words)-2:], " ")
+	loaded := 0
+	total := config.MaxN - minN + 1
+	for result := range resultChan {
+		loaded++
+		updateProgress(job, loaded*40/total, 100, fmt.Sprintf("Loaded %d-grams (top %d)...", result.n, topN))
+		for _, entry := range result.entries {
+			endKey := strings.Join(entry.words[len(entry.words)-2:], " ")
 			endsWith[endKey] = append(endsWith[endKey], entry)
 
-			startKey := strings.Join(ng.words[:2], " ")
+			startKey := strings.Join(entry.words[:2], " ")
 			startsWith[startKey] = append(startsWith[startKey], entry)
 		}
 	}
@@ -1050,40 +1075,48 @@ func generateBestChainsReport(job *ReportJob, config *CacheConfig, outPath strin
 					break
 				}
 
-				// Find best next n-gram (one with most shared files)
+				// Find best next n-gram (prefer shared files, fallback to highest count)
 				var bestNext *ngramEntry
-				var bestShared int
+				var bestScore int
 				for i := range nextList {
 					next := &nextList[i]
 					if strings.Join(next.words, " ") == strings.Join(current.words, " ") {
 						continue
 					}
 
+					// Score: shared files * 1000 + count (prioritize file overlap, but use count as tiebreaker)
 					shared := 0
-					for f := range sharedFiles {
-						if next.files[f] {
-							shared++
+					if len(sharedFiles) > 0 && next.files != nil {
+						for f := range sharedFiles {
+							if next.files[f] {
+								shared++
+							}
 						}
 					}
-					if shared > bestShared {
-						bestShared = shared
+					score := shared*1000 + next.count
+					if bestNext == nil || score > bestScore {
+						bestScore = score
 						bestNext = next
 					}
 				}
 
-				if bestNext == nil || bestShared < 2 {
+				if bestNext == nil {
 					break
 				}
 
 				chain = append(chain, *bestNext)
-				// Update shared files
-				newShared := make(map[int]bool)
-				for f := range sharedFiles {
-					if bestNext.files[f] {
-						newShared[f] = true
+				// Update shared files (keep intersection, or just use next's files if we had none)
+				if len(sharedFiles) > 0 && bestNext.files != nil {
+					newShared := make(map[int]bool)
+					for f := range sharedFiles {
+						if bestNext.files[f] {
+							newShared[f] = true
+						}
 					}
+					sharedFiles = newShared
+				} else if bestNext.files != nil {
+					sharedFiles = bestNext.files
 				}
-				sharedFiles = newShared
 				current = *bestNext
 			}
 
