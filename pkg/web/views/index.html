@@ -74,19 +74,44 @@
                                 <option value="top_ngrams">Top N-grams Summary</option>
                                 <option value="search">Search Report</option>
                                 <option value="recurring_text">🔥 Recurring Text Finder</option>
+                                <option value="linked_ngrams">🔗 Most Linked N-grams</option>
+                                <option value="best_chains">🏆 Best Chains (auto-find longest)</option>
                             </select>
                             <input id="reportQuery" placeholder="Query (for search)" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm mb-2 hidden">
                             <div id="recurringOptions" class="hidden space-y-2 mb-2">
-                                <div>
-                                    <label class="text-xs text-gray-400">Min N-gram size:</label>
-                                    <select id="minN" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm">
-                                        <option value="3">3 words</option>
-                                        <option value="5" selected>5 words</option>
-                                        <option value="7">7 words</option>
-                                        <option value="10">10 words</option>
-                                    </select>
+                                <div class="grid grid-cols-3 gap-2">
+                                    <div>
+                                        <label class="text-xs text-gray-400">Min N-gram:</label>
+                                        <select id="minN" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                            <option value="3">3 words</option>
+                                            <option value="5" selected>5 words</option>
+                                            <option value="7">7 words</option>
+                                            <option value="10">10 words</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label class="text-xs text-gray-400">Min Files:</label>
+                                        <select id="minFiles" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                            <option value="2" selected>2+ files</option>
+                                            <option value="5">5+ files</option>
+                                            <option value="10">10+ files</option>
+                                            <option value="50">50+ files</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label class="text-xs text-gray-400">Top N:</label>
+                                        <select id="topN" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                            <option value="10">10 (fast)</option>
+                                            <option value="50">50</option>
+                                            <option value="100" selected>100</option>
+                                            <option value="500">500 (slow)</option>
+                                        </select>
+                                    </div>
                                 </div>
-                                <p class="text-xs text-gray-500">Finds sentences/paragraphs that appear in multiple files</p>
+                                <label class="flex items-center gap-2 text-xs text-gray-400 cursor-pointer">
+                                    <input type="checkbox" id="skipNumeric" checked class="rounded bg-gray-800 border-gray-600">
+                                    Skip numeric patterns (hide 7 7 7, 0 0 0, etc.)
+                                </label>
                             </div>
                             <button onclick="queueReport()" class="w-full bg-indigo-600 text-white rounded px-3 py-1.5 text-sm font-medium hover:bg-indigo-500">
                                 Generate Report
@@ -131,7 +156,7 @@
 
         document.getElementById('reportType').onchange = (e) => {
             document.getElementById('reportQuery').classList.toggle('hidden', e.target.value !== 'search');
-            document.getElementById('recurringOptions').classList.toggle('hidden', e.target.value !== 'recurring_text');
+            document.getElementById('recurringOptions').classList.toggle('hidden', !['recurring_text', 'linked_ngrams', 'best_chains'].includes(e.target.value));
         };
 
         function showView(v) {
@@ -207,7 +232,10 @@
             const type = document.getElementById('reportType').value;
             const query = document.getElementById('reportQuery').value;
             const minN = parseInt(document.getElementById('minN').value);
-            const res = await fetch('/api/report', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ type, query, minN }) });
+            const minFiles = parseInt(document.getElementById('minFiles').value);
+            const skipNumeric = document.getElementById('skipNumeric').checked;
+            const topN = parseInt(document.getElementById('topN').value);
+            const res = await fetch('/api/report', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ type, query, minN, minFiles, skipNumeric, topN }) });
             const job = await res.json();
             showView('report');
             document.getElementById('reportTitle').textContent = job.name || job.type;
@@ -250,21 +278,116 @@
                 result.data.chains.forEach((chain, idx) => {
                     const filesHtml = chain.files?.length 
                         ? chain.files.map(f => `<div class="py-1 px-2 bg-gray-900 rounded text-xs text-gray-300">${f}</div>`).join('')
-                        : '<div class="text-gray-500 text-xs">File data not available - run with -cache ngrams first</div>';
+                        : '<div class="text-gray-500 text-xs">No shared files found</div>';
+                    
+                    // Build highlighted text showing segments
+                    const words = chain.fullText.split(' ');
+                    const seg1 = chain.segments[0];
+                    const seg2 = chain.segments[1];
+                    
+                    // Create highlighted spans for each word
+                    // Segment 1 only: 0 to seg1.endIdx-2 (exclusive part)
+                    // Overlap: seg1.endIdx-1 to seg1.endIdx (2 words)
+                    // Segment 2 only: seg1.endIdx+1 to end
+                    const overlapStart = seg1.n - 2;
+                    const overlapEnd = seg1.n - 1;
+                    
+                    let highlightedText = '';
+                    words.forEach((word, i) => {
+                        if (i < overlapStart) {
+                            // Segment 1 only (indigo)
+                            highlightedText += `<span class="text-indigo-400">${word}</span> `;
+                        } else if (i <= overlapEnd) {
+                            // Overlap (amber with underline)
+                            highlightedText += `<span class="text-amber-400 underline decoration-amber-400/50">${word}</span> `;
+                        } else {
+                            // Segment 2 only (emerald)
+                            highlightedText += `<span class="text-emerald-400">${word}</span> `;
+                        }
+                    });
                     
                     html += `
                         <div class="bg-gray-800 rounded-lg p-3">
-                            <div class="mb-2">
-                                <span class="text-indigo-400 font-medium">${chain.fullText}</span>
+                            <div class="mb-2 leading-relaxed">
+                                ${highlightedText}
                             </div>
                             <div class="flex items-center gap-4 text-xs text-gray-400 mb-2">
                                 <span>📏 ${chain.totalLength} words</span>
+                                <span>🔗 overlap: <span class="text-amber-400">"${chain.overlap}"</span></span>
                                 <span>📁 <button onclick="toggleFiles(${idx})" class="text-emerald-400 hover:underline">${chain.fileCount} files</button></span>
                             </div>
-                            <div class="text-xs text-gray-500 mb-2">
-                                ${chain.segments.map(s => `<span class="bg-gray-700 px-1.5 py-0.5 rounded mr-1">${s.n}-gram (${s.count})</span>`).join(' + ')}
+                            <div class="text-xs mb-2 flex gap-2">
+                                <span class="bg-indigo-900/50 text-indigo-300 px-1.5 py-0.5 rounded">${seg1.n}-gram (${seg1.count})</span>
+                                <span class="text-gray-500">→</span>
+                                <span class="bg-emerald-900/50 text-emerald-300 px-1.5 py-0.5 rounded">${seg2.n}-gram (${seg2.count})</span>
                             </div>
                             <div id="files-${idx}" class="hidden mt-2 max-h-40 overflow-y-auto space-y-1">
+                                ${filesHtml}
+                            </div>
+                        </div>
+                    `;
+                });
+                html += '</div>';
+                document.getElementById('reportContent').innerHTML = html;
+            } else if (result.data?.chains && result.data?.type === 'linked_ngrams') {
+                // Linked chains visualization (A → B → C)
+                let html = `<p class="mb-4 text-gray-400">${result.data.chainCount} n-gram chains (min ${result.data.minN}-gram, ${result.data.minFiles}+ files)</p>`;
+                html += '<div class="space-y-3">';
+                
+                result.data.chains.forEach((chain, idx) => {
+                    const filesHtml = chain.files?.length 
+                        ? chain.files.map(f => `<div class="py-1 px-2 bg-gray-900 rounded text-xs text-gray-300">${f}</div>`).join('')
+                        : '<div class="text-gray-500 text-xs">No file data</div>';
+                    
+                    // Color each segment
+                    const segmentColors = ['text-indigo-400', 'text-amber-400', 'text-emerald-400'];
+                    const chainLabels = chain.chain.map((node, i) => 
+                        `<span class="bg-gray-700 px-1.5 py-0.5 rounded text-xs ${segmentColors[i] || 'text-gray-300'}">${node.n}-gram (${node.count})</span>`
+                    ).join(' <span class="text-gray-500">→</span> ');
+                    
+                    html += `
+                        <div class="bg-gray-800 rounded-lg p-3">
+                            <div class="mb-2 text-indigo-300 leading-relaxed">${chain.fullText}</div>
+                            <div class="flex items-center gap-4 text-xs text-gray-400 mb-2">
+                                <span>📏 ${chain.chainLength} linked</span>
+                                <span>📁 <button onclick="toggleFiles(${idx + 1000})" class="text-emerald-400 hover:underline">${chain.fileCount} files</button></span>
+                            </div>
+                            <div class="text-xs mb-2">${chainLabels}</div>
+                            <div id="files-${idx + 1000}" class="hidden mt-2 max-h-40 overflow-y-auto space-y-1">
+                                ${filesHtml}
+                            </div>
+                        </div>
+                    `;
+                });
+                html += '</div>';
+                document.getElementById('reportContent').innerHTML = html;
+            } else if (result.data?.chains && result.data?.type === 'best_chains') {
+                // Best chains visualization (sorted by score)
+                let html = `<p class="mb-4 text-gray-400">${result.data.chainCount} best chains found (sorted by files × words)</p>`;
+                html += '<div class="space-y-3">';
+                
+                result.data.chains.forEach((chain, idx) => {
+                    const filesHtml = chain.files?.length 
+                        ? chain.files.map(f => `<div class="py-1 px-2 bg-gray-900 rounded text-xs text-gray-300">${f}</div>`).join('')
+                        : '<div class="text-gray-500 text-xs">No file data</div>';
+                    
+                    // Color each segment
+                    const colors = ['text-indigo-400', 'text-amber-400', 'text-emerald-400', 'text-pink-400', 'text-cyan-400'];
+                    const chainLabels = chain.chain.map((node, i) => 
+                        `<span class="bg-gray-700 px-1.5 py-0.5 rounded text-xs ${colors[i % colors.length]}">${node.n}-gram</span>`
+                    ).join(' <span class="text-gray-500">→</span> ');
+                    
+                    html += `
+                        <div class="bg-gray-800 rounded-lg p-3">
+                            <div class="mb-2 text-indigo-300 leading-relaxed">${chain.fullText}</div>
+                            <div class="flex items-center gap-4 text-xs mb-2">
+                                <span class="bg-gradient-to-r from-amber-500 to-pink-500 text-white px-2 py-0.5 rounded font-bold">🏆 Score: ${chain.score}</span>
+                                <span class="text-gray-400">📏 ${chain.wordCount} words</span>
+                                <span class="text-gray-400">📁 <button onclick="toggleFiles(${idx + 2000})" class="text-emerald-400 hover:underline">${chain.fileCount} files</button></span>
+                                <span class="text-gray-400">🔗 ${chain.chain.length} linked</span>
+                            </div>
+                            <div class="text-xs mb-2">${chainLabels}</div>
+                            <div id="files-${idx + 2000}" class="hidden mt-2 max-h-40 overflow-y-auto space-y-1">
                                 ${filesHtml}
                             </div>
                         </div>
